@@ -151,15 +151,15 @@ library.
 
 ## Status
 
-Built in the open during Hack Hydra, 12–20 August 2026. Honest state of play:
+Built in the open during Hack Hydra, 12–20 August 2026.
 
-- [x] **Session 0** — all three layers verified against live systems
-- [x] **Session 1** — 511,962 documents normalised in 36s, 19 parser tests green
-- [ ] **Session 2** — full-corpus ingestion into HydraDB Cloud
-- [ ] **Session 3** — entity resolution
-- [ ] **Session 4–6** — graph loader, claim extraction, conflict + trust
-- [ ] **Session 7–9** — query planner, abstention, evaluation
-- [ ] **Session 10–11** — reasoning canvas, ship
+- [x] Engine, cloud and model layers verified end to end
+- [x] Corpus intake — 511,962 documents normalised, 19 parser tests green
+- [ ] Recall indexing
+- [ ] Entity resolution
+- [ ] Claim extraction, conflict arbitration and trust
+- [ ] Query planner, abstention and evaluation
+- [ ] Reasoning canvas
 
 ### Coverage, stated precisely
 
@@ -171,9 +171,9 @@ of this claims to have deeply read half a million documents:
 | Tier | Coverage | What happens | Status |
 |---|---|---|---|
 | Normalisation | all 511,962 | parsed, structural signals mined, no LLM | done — 36s |
-| Recall indexing | all 511,962 | embedded and searchable | Session 2 |
-| Identity resolution | all 511,962 | aliases clustered into entities | Session 3 |
-| Claim extraction | per query | LLM reads only what the question reaches | Session 5 |
+| Recall indexing | all 511,962 | embedded and searchable | in progress |
+| Identity resolution | all 511,962 | aliases clustered into entities | in progress |
+| Claim extraction | per query | LLM reads only what the question reaches | planned |
 
 ### What the corpus actually looks like
 

@@ -4,9 +4,9 @@
 
 **An enterprise ontology you can see through.**
 
-Half a million messy documents from nine SaaS tools, turned into a queryable
-ontology — with entity resolution, conflict arbitration, and honest abstention,
-all visible as it happens.
+Nine enterprise tools disagree about who owns what. Glasshouse resolves the
+identities, arbitrates the contradictions, admits when the answer isn't there —
+and shows its work while it does.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](pyproject.toml)
@@ -157,6 +157,20 @@ Built in the open during Hack Hydra, 12–20 August 2026. Honest state of play:
 - [ ] **Session 7–9** — query planner, abstention, evaluation
 - [ ] **Session 10–11** — reasoning canvas, ship
 
+### Coverage, stated precisely
+
+Corpus scale is the dataset's property, not an achievement — every Track 01
+entry gets the same documents. What matters is what is actually done to them, and
+that differs by tier. Claim extraction runs **per query**, by design, so no part
+of this claims to have deeply read half a million documents:
+
+| Tier | Coverage | What happens | Status |
+|---|---|---|---|
+| Normalisation | all 511,962 | parsed, structural signals mined, no LLM | done — 36s |
+| Recall indexing | all 511,962 | embedded and searchable | Session 2 |
+| Identity resolution | all 511,962 | aliases clustered into entities | Session 3 |
+| Claim extraction | per query | LLM reads only what the question reaches | Session 5 |
+
 ### What the corpus actually looks like
 
 | Source | Docs | Source | Docs |
@@ -167,10 +181,18 @@ Built in the open during Hack Hydra, 12–20 August 2026. Honest state of play:
 | Google Drive | 25,108 | Jira | 6,120 |
 | Confluence | 5,189 | **Total** | **511,962** |
 
-Structural signals mined without a single LLM call: **1.9M** name↔email pairs,
-**953k** speaker turns, **291k** @mentions, **7,890** bot accounts filtered out.
-Entity-resolution working set: **36,752** surfaces seen five or more times —
-91.6% of email addresses appear exactly once.
+The whole corpus is normalised in **36 seconds** without a single LLM call,
+yielding **1.9M** name↔email pairs, **953k** speaker turns, **291k** @mentions,
+and **7,890** bot accounts filtered out of the people pool.
+
+That speed is the point: identity resolution — the thing this track actually
+scores — turns out to need almost no LLM. Handles, emails, author fields and
+attendee blocks are *structured*. So full-corpus identity coverage is nearly
+free, and the expensive model calls are spent only where reasoning is required.
+
+Entity-resolution working set: **36,752** surfaces seen five or more times.
+91.6% of email addresses appear exactly once — a long tail of one-off external
+contacts that no amount of compute would make worth resolving.
 
 > **Meeting transcripts are the most underrated source in an enterprise.** They
 > carry full names in timestamped turns, tie those names to an *organisation*, and

@@ -1,0 +1,33 @@
+services:
+  # HydraDB open-source engine: the precision layer that holds the ontology.
+  # Storage and compute are disaggregated; with CLOUD_PROVIDER=local the durable
+  # store is a bind mount instead of S3, which is all a single node needs.
+  engine:
+    image: ghcr.io/hydra-db/hydradb:latest
+    container_name: glasshouse-engine
+    ports:
+      - "7687:7687"   # Bolt 5.x (Neo4j-compatible)
+      - "8443:8443"   # HTTPS query API
+      - "9090:9090"   # admin: /readyz, /metrics
+    volumes:
+      - ./hydradb-data:/data
+    environment:
+      CLOUD_PROVIDER: local
+      LOCAL_PATH: /data/store
+      GRAPH_NAMESPACE: default
+      GRAPH_ID: default
+      GRAPH_CELL_ID: cell-0
+      GRAPH_CELLS: cell-0
+      GRAPH_NODE_ID: node-0
+      GRAPH_BOLT_NODE_ADDRESSES: node-0=127.0.0.1:7687
+      GRAPH_ADVERTISED_BOLT_ADDR: 127.0.0.1:7687
+      GRAPH_DATA_CACHE_DIR: /data/cache
+      GRAPH_AUTH_TOKEN_FILE: /data/auth-token
+      GRAPH_ALLOW_PLAINTEXT: "true"
+      RUST_MIN_STACK: "33554432"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8443/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped

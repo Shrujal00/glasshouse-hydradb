@@ -3,6 +3,21 @@ name = "glasshouse"
 version = "0.1.0"
 description = "A queryable enterprise ontology with visible reasoning, built on HydraDB"
 requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [{ name = "Shrujal Ganatra" }]
+dependencies = [
+    "hydradb-sdk>=2,<3",
+    "ollama>=0.6",
+    "pydantic>=2",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/Shrujal00/glasshouse-hydradb"
 
 [build-system]
 requires = ["setuptools>=68"]

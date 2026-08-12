@@ -1,0 +1,10 @@
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+data/raw/
+data/cache/
+hydradb-data/
+.DS_Store

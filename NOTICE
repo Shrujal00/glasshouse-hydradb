@@ -1,0 +1,30 @@
+Glasshouse
+Copyright 2026 __AUTHOR_NAME__ (github.com/__GITHUB_HANDLE__)
+
+This product includes software developed for the Hack Hydra hackathon,
+Track 01 (Enterprise Context and Ontology).
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+If you use, fork, or build on this work, this NOTICE file and its
+attribution must be retained in your distribution, per section 4 of the
+Apache License.
+
+--------------------------------------------------------------------------
+Third-party components:
+
+  HydraDB (graph engine)          AGPL-3.0
+                                  https://github.com/hydra-db/hydradb
+                                  Run as a separate containerized service;
+                                  not linked into this codebase.
+
+  HydraDB Python SDK              https://hydradb.com
+
+  EnterpriseRAG-Bench (dataset)   https://github.com/onyx-dot-app/EnterpriseRAG-Bench
+                                  Not redistributed here; fetched by script.
+
+  Salesforce HERB (dataset)       CC-BY-NC-4.0, research/non-commercial only
+                                  https://huggingface.co/datasets/Salesforce/HERB
+                                  Not redistributed here.
+
+  Ollama                          https://ollama.com

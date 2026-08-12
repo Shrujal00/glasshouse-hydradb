@@ -8,3 +8,7 @@ data/raw/
 data/cache/
 hydradb-data/
 .DS_Store
+data/raw/
+data/corpus/
+data/bench/questions_blind.jsonl
+data/normalized/

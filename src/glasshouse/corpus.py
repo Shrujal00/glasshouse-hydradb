@@ -24,7 +24,9 @@ _FILENAME = re.compile(r"^dsid_([0-9a-f]+)__(.+)\.txt$")
 # Ticket-ish prefixes that appear in slugs: PM-772222, SUP-359481, pr-29012
 _TICKET = re.compile(r"^([A-Za-z]{2,5})-(\d{3,})")
 
-_EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+# Trailing dots/commas belong to the sentence, not the address; without the
+# trimming group "a@b.com." and "a@b.com" would resolve to two identities.
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]*[\w]")
 
 # "Vivek Kulkarni <vivek_kulkarni@redwoodinference.com>"
 _NAMED_EMAIL = re.compile(r"([A-Z][\w'’.-]*(?:\s+[A-Z][\w'’.-]*)+)\s*<([^>]+)>")
@@ -44,8 +46,16 @@ _ACTION = re.compile(r"^([A-Z][\w'’.-]*(?:\s+[A-Z][\w'’.-]*)+)\s+-\s+(?=\S)"
 # "Date: 2025-06-12" inside a meeting header
 _META_DATE = re.compile(r"^Date:\s*(\d{4}-\d{2}-\d{2})", re.MULTILINE)
 
-# @mention and #channel
-_MENTION = re.compile(r"@([\w.\-]{2,32})")
+# @mention and #channel. The lookbehind stops the domain half of an email
+# address ("...@redwood.com") from being harvested as a mention.
+_MENTION = re.compile(r"(?<![\w.+-])@([\w.\-]{2,32})")
+
+# Automation accounts are not people; they must not enter entity resolution
+# as candidate humans.
+_BOT = re.compile(r"(?:^|[-_])(?:bot|ci|cd|jenkins|webhook|noreply|no-reply)(?:$|[-_])|^(?:deploy|ops|infra|build|release|alert)[-_]", re.I)
+
+# "Attendees (as recorded):" and friends carry no real organisation.
+_NON_ORG = re.compile(r"^(?:as\s+)?(?:recorded|listed|captured|noted|above|below|n/?a|unknown|tbd)$", re.I)
 _CHANNEL = re.compile(r"#([\w\-]{2,40})")
 
 _HEADER = re.compile(r"^(From|To|Cc|Bcc|Date|Subject|Attachments):\s*(.*)$")
@@ -77,6 +87,7 @@ class Document:
     # meeting transcripts: full names tied to an organisation, the single
     # strongest signal for separating employees from customer contacts
     attendees: list[dict[str, str]] = field(default_factory=list)
+    bots: list[str] = field(default_factory=list)
     ticket_key: str | None = None
     date: str | None = None
     thread_id: str | None = None
@@ -93,6 +104,11 @@ class Document:
 def _unescape(text: str) -> str:
     r"""Some sources embed literal \n sequences rather than real newlines."""
     return text.replace("\\n", "\n") if "\\n" in text else text
+
+
+def is_bot(handle: str) -> bool:
+    """True when a handle looks like an automation account rather than a person."""
+    return bool(_BOT.search(handle))
 
 
 def _dedupe(items: list[str]) -> list[str]:
@@ -186,11 +202,20 @@ def parse_document(path: Path, source: str, root: Path) -> Document:
             [m.group(1).strip() for line in body.split("\n") if (m := _TURN.match(line))]
         )
         for org, names in _ATTENDEES.findall(body):
+            org = org.strip()
+            if _NON_ORG.match(org):
+                org = ""
             for name in names.split(","):
                 if name := name.strip():
-                    attendees.append({"name": name, "org": org.strip()})
+                    attendees.append({"name": name, "org": org})
         # Action-item owners are named even when they never speak.
         speakers = _dedupe(speakers + _ACTION.findall(body))
+
+    mentions = _dedupe(_MENTION.findall(raw))[:64]
+    bots = [m for m in mentions if is_bot(m)]
+    bots += [s for s in speakers if is_bot(s)]
+    mentions = [m for m in mentions if not is_bot(m)]
+    speakers = [s for s in speakers if not is_bot(s)]
 
     ticket_key = None
     if t := _TICKET.match(slug):
@@ -213,10 +238,11 @@ def parse_document(path: Path, source: str, root: Path) -> Document:
         emails=emails,
         named_emails=named,
         speakers=speakers,
-        mentions=_dedupe(_MENTION.findall(raw))[:64],
+        mentions=mentions,
         channels=_dedupe(channels + _CHANNEL.findall(raw))[:32],
         headers=headers,
         attendees=attendees,
+        bots=_dedupe(bots),
         ticket_key=ticket_key,
         date=date,
         thread_id=thread_id,

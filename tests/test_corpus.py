@@ -169,3 +169,40 @@ def test_fireflies_attendees_carry_org_affiliation(tmp_path):
 def test_fireflies_date_from_meeting_header(tmp_path):
     p = write(tmp_path, "fireflies", "dsid_05fa__security-review.txt", FIREFLIES)
     assert parse_document(p, "fireflies", tmp_path).date == "2025-06-12"
+
+
+def test_email_domain_is_not_harvested_as_mention(tmp_path):
+    p = write(
+        tmp_path, "gmail", "dsid_m__x.txt",
+        "Subject\n\nFrom: A B <a.b@redwoodinference.com>\n\nping @maya about this\n",
+    )
+    doc = parse_document(p, "gmail", tmp_path)
+    assert "maya" in doc.mentions
+    # the domain half of the address must not become a mention
+    assert not any("redwoodinference" in m for m in doc.mentions)
+
+
+def test_bots_are_separated_from_people(tmp_path):
+    p = write(
+        tmp_path, "slack", "dsid_b__123456-deploy.txt",
+        "eng-ml\n\nmaya: shipping now\ndeploy-bot: build 412 succeeded\n",
+    )
+    doc = parse_document(p, "slack", tmp_path)
+    assert doc.speakers == ["maya"]
+    assert "deploy-bot" in doc.bots
+
+
+def test_placeholder_attendee_org_is_blanked(tmp_path):
+    p = write(
+        tmp_path, "fireflies", "dsid_o__mtg.txt",
+        "Title\n\nAttendees (as recorded): Priya Nair, Daniel Cho\n",
+    )
+    doc = parse_document(p, "fireflies", tmp_path)
+    assert [a["org"] for a in doc.attendees] == ["", ""]
+    assert {a["name"] for a in doc.attendees} == {"Priya Nair", "Daniel Cho"}
+
+
+def test_trailing_punctuation_stripped_from_email(tmp_path):
+    p = write(tmp_path, "jira", "dsid_e__x.txt", "T\n\nPage eng-oncall@redwood.ai. Then escalate.\n")
+    doc = parse_document(p, "jira", tmp_path)
+    assert doc.emails == ["eng-oncall@redwood.ai"]

@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/hero.png" alt="Scattered documents converging into a resolved graph, with two conflicting nodes lit in orange" width="100%">
+
 # Glasshouse
 
 **An enterprise ontology you can see through.**

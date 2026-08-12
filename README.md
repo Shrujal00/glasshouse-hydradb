@@ -8,6 +8,10 @@ Nine enterprise tools disagree about who owns what. Glasshouse resolves the
 identities, arbitrates the contradictions, admits when the answer isn't there —
 and shows its work while it does.
 
+Half a million messy documents from nine SaaS tools, made queryable as one
+ontology — with entity resolution, conflict arbitration, and honest abstention,
+all visible as it happens.
+
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](pyproject.toml)
 [![Built on HydraDB](https://img.shields.io/badge/built%20on-HydraDB-ff5c39.svg)](https://hydradb.com)

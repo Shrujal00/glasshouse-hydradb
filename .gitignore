@@ -12,6 +12,9 @@ data/raw/
 data/corpus/
 data/bench/questions_blind.jsonl
 data/normalized/
+# Built artifacts: the 4 GB recall index, the resolved ontology, the learned
+# priors. All reproducible from the corpus with scripts/, none of it source.
+data/state/
 
 # Internal design docs — restored to the repo at submission (Aug 20)
 docs/superpowers/

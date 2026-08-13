@@ -249,6 +249,37 @@ def parse_document(path: Path, source: str, root: Path) -> Document:
     )
 
 
+def parse_document_text(text: str, source: str) -> dict[str, list[str]]:
+    """Mine identity surfaces out of raw document text.
+
+    The same signals `parse_document` extracts at intake, but reading a string
+    rather than a file, because at question time the document arrives from the
+    recall index rather than from disk. Used to find who a retrieved document
+    is about without re-reading the corpus.
+    """
+    raw = _unescape(text)
+    emails = _dedupe([e.lower() for e in _EMAIL.findall(raw)])
+    names = [n.strip() for n, _ in _NAMED_EMAIL.findall(raw)]
+
+    handles: list[str] = []
+    for line in raw.split("\n"):
+        if m := _SPEAKER.match(line):
+            handles.append(m.group(1))
+        elif m := _TURN.match(line):
+            names.append(m.group(1).strip())
+
+    for org, people in _ATTENDEES.findall(raw):
+        names.extend(p.strip() for p in people.split(",") if p.strip())
+    names.extend(_ACTION.findall(raw))
+    handles.extend(_MENTION.findall(raw))
+
+    return {
+        "emails": [e for e in emails if "@" in e and len(e) < 120],
+        "names": _dedupe([n for n in names if n and len(n) < 80]),
+        "handles": _dedupe([h for h in handles if not is_bot(h)]),
+    }
+
+
 def iter_source_files(root: Path, source: str):
     """Yield every file under one source directory."""
     yield from sorted((root / source).rglob("*.txt"))

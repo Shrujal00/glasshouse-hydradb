@@ -451,22 +451,6 @@ class Asker:
             "ms": round((time.time() - t0) * 1000),
         }
 
-        # Start writing the answer now, on a background thread, so the model
-        # composes while the graph is still being drawn. It must not wait on the
-        # identity work or be skipped by it: most questions are not about people
-        # at all — "what are the upload size limits" needs the documents alone.
-        written: queue.Queue = queue.Queue()
-
-        def compose() -> None:
-            try:
-                for part in answer.write_streaming(question, docs, people):
-                    written.put(part)
-            except Exception as exc:
-                written.put({"error": f"{type(exc).__name__}: {exc}"})
-            written.put(None)
-
-        threading.Thread(target=compose, daemon=True).start()
-
         # Which people appear in which documents — the edges the canvas draws.
         for p in people:
             for d in docs:
@@ -477,10 +461,10 @@ class Asker:
                         "to": f"doc:{d.doc_id}",
                     }
 
-        # Traversal is the last step and the most fragile, because it writes to
-        # the engine before it reads. If it fails, the people and the evidence
-        # are already established and worth showing — losing the whole answer
-        # over a failed graph write would be the wrong trade.
+        # Traversal runs before answer composition so that graph paths can
+        # change what the model writes.  The engine write-then-read takes
+        # single-digit milliseconds against a local container, so the
+        # reordering adds no perceptible latency.
         try:
             paths = self.connect(question, people, docs)
         except Exception as exc:
@@ -492,6 +476,19 @@ class Asker:
             }
         for path in paths:
             yield {"type": "path", **path}
+
+        # Now compose the answer, with graph evidence included.
+        written: queue.Queue = queue.Queue()
+
+        def compose() -> None:
+            try:
+                for part in answer.write_streaming(question, docs, people, paths=paths):
+                    written.put(part)
+            except Exception as exc:
+                written.put({"error": f"{type(exc).__name__}: {exc}"})
+            written.put(None)
+
+        threading.Thread(target=compose, daemon=True).start()
 
         yield {"type": "writing"}
         cited: list[int] = []

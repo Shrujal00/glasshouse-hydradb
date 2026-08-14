@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glasshouse</title>
+<style>
+  :root{
+    --ground:#0E1420; --pane:#151E2E; --edge:#22304a;
+    --ink:#E8EDF5; --slate:#7C8DA6; --dim:#4A5B75;
+    --trace:#5FD3C4;      /* resolution, traversal — the machinery */
+    --evidence:#F0C674;   /* documents — the human material */
+    --doubt:#E8735A;      /* ambiguity, abstention */
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Inter,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--ground); color:var(--ink);
+    font-family:var(--sans); font-size:14px; line-height:1.5;
+    display:flex; flex-direction:column; overflow:hidden;
+  }
+
+  /* ── header ───────────────────────────────────────────── */
+  header{
+    display:flex; align-items:baseline; gap:18px;
+    padding:14px 20px; border-bottom:1px solid var(--edge); flex:none;
+  }
+  .wordmark{
+    font-family:var(--mono); font-size:15px; font-weight:600;
+    letter-spacing:-0.03em; color:var(--ink);
+  }
+  .wordmark span{color:var(--trace)}
+  .tagline{color:var(--slate); font-size:12.5px}
+  .counts{margin-left:auto; display:flex; gap:20px; font-family:var(--mono); font-size:12px}
+  .counts b{color:var(--ink); font-weight:600}
+  .counts i{color:var(--dim); font-style:normal}
+
+  /* ── ask bar ──────────────────────────────────────────── */
+  form{
+    display:flex; gap:10px; padding:14px 20px;
+    border-bottom:1px solid var(--edge); flex:none; align-items:center;
+  }
+  .prompt{font-family:var(--mono); color:var(--trace); font-size:14px}
+  input{
+    flex:1; background:transparent; border:none; outline:none;
+    color:var(--ink); font-family:var(--mono); font-size:15px; padding:6px 0;
+    border-bottom:1px solid var(--edge); transition:border-color .15s;
+  }
+  input::placeholder{color:var(--dim)}
+  input:focus{border-bottom-color:var(--trace)}
+  button{
+    background:var(--trace); color:#08121A; border:none; cursor:pointer;
+    font-family:var(--mono); font-size:12.5px; font-weight:600;
+    padding:7px 16px; border-radius:2px; letter-spacing:.02em;
+  }
+  button:disabled{background:var(--edge); color:var(--dim); cursor:default}
+  button:focus-visible,input:focus-visible{outline:2px solid var(--trace); outline-offset:2px}
+
+  /* ── layout ───────────────────────────────────────────── */
+  main{flex:1; display:grid; grid-template-columns:1fr 384px; min-height:0}
+  #stage{position:relative; min-width:0}
+  canvas{display:block; width:100%; height:100%}
+  .hint{
+    position:absolute; inset:0; display:grid; place-content:center; gap:14px;
+    text-align:center; color:var(--dim); pointer-events:none; padding:40px;
+  }
+  .hint p{margin:0; font-size:13px; max-width:46ch; line-height:1.7}
+  .hint .big{font-family:var(--mono); font-size:13px; color:var(--slate)}
+  .hint code{color:var(--trace); cursor:pointer; pointer-events:auto}
+
+  aside{
+    border-left:1px solid var(--edge); overflow-y:auto; padding:0 0 40px;
+    background:var(--pane);
+  }
+  .block{padding:16px 18px; border-bottom:1px solid var(--edge)}
+  h2{
+    font-family:var(--mono); font-size:10.5px; font-weight:600; margin:0 0 12px;
+    letter-spacing:.14em; text-transform:uppercase; color:var(--dim);
+  }
+
+  /* answer — the thing the reader came for, so it leads */
+  .answer{font-size:14.5px; line-height:1.65; color:var(--ink); white-space:pre-wrap}
+  .answer:empty::after{content:'▊'; color:var(--trace); animation:blink 1s steps(2) infinite}
+  @keyframes blink{50%{opacity:0}}
+  .answer cite{
+    font-style:normal; font-family:var(--mono); font-size:11px; color:var(--evidence);
+    background:rgba(240,198,116,.10); padding:0 4px; border-radius:2px; margin:0 1px;
+  }
+  .sources{margin-top:11px; display:flex; flex-direction:column; gap:4px}
+  .sources div{font-size:11.5px; color:var(--slate); display:flex; gap:7px; align-items:baseline}
+  .sources b{font-family:var(--mono); font-size:10.5px; color:var(--evidence); font-weight:400}
+  #ans-block.no{border-left:2px solid var(--doubt)}
+  #ans-block.no h2{color:var(--doubt)}
+
+  /* trace */
+  .step{display:flex; gap:10px; align-items:baseline; font-family:var(--mono); font-size:12px; padding:3px 0}
+  .step .tick{color:var(--trace); width:10px; flex:none}
+  .step .what{color:var(--slate); flex:1}
+  .step .num{color:var(--ink)}
+  .step .ms{color:var(--dim); font-size:11px}
+
+  /* people */
+  .person{padding:11px 0; border-top:1px solid var(--edge)}
+  .person:first-of-type{border-top:none}
+  .person .name{font-weight:600; font-size:14px; display:flex; align-items:baseline; gap:8px}
+  .badge{
+    font-family:var(--mono); font-size:10px; padding:2px 6px; border-radius:2px;
+    background:rgba(95,211,196,.12); color:var(--trace); letter-spacing:.02em;
+  }
+  .badge.one{background:rgba(124,141,166,.12); color:var(--slate)}
+  .aliases{display:flex; flex-wrap:wrap; gap:5px; margin-top:7px}
+  .alias{
+    font-family:var(--mono); font-size:11px; color:var(--slate);
+    background:var(--ground); border:1px solid var(--edge);
+    padding:2px 7px; border-radius:2px; display:inline-flex; gap:6px; align-items:baseline;
+  }
+  /* the reason this surface was attached — the audit trail, inline */
+  .alias em{font-style:normal; font-size:9.5px; color:var(--trace); opacity:.75; letter-spacing:.02em}
+
+  /* evidence */
+  .doc{display:flex; gap:9px; padding:6px 0; font-size:12.5px; align-items:baseline}
+  .src{
+    font-family:var(--mono); font-size:10px; color:var(--evidence);
+    border:1px solid rgba(240,198,116,.28); padding:1px 5px; border-radius:2px;
+    flex:none; text-transform:uppercase; letter-spacing:.04em;
+  }
+  .doc .t{color:var(--slate); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+
+  /* connections */
+  .conn{font-family:var(--mono); font-size:11.5px; color:var(--slate); padding:5px 0}
+  .conn b{color:var(--ink); font-weight:500}
+  .conn .via{color:var(--evidence)}
+
+  .abstain{border-left:2px solid var(--doubt); padding-left:12px}
+  .abstain .gate{font-family:var(--mono); font-size:10px; color:var(--doubt);
+    text-transform:uppercase; letter-spacing:.1em}
+  .abstain p{margin:5px 0 0; color:var(--slate); font-size:13px}
+
+  @media (max-width:900px){
+    main{grid-template-columns:1fr; grid-template-rows:44vh 1fr}
+    aside{border-left:none; border-top:1px solid var(--edge)}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wordmark">glass<span>house</span></div>
+  <div class="tagline">who is who, and how do we know</div>
+  <div class="counts">
+    <div><b id="c-docs">—</b> <i>documents</i></div>
+    <div><b id="c-ents">—</b> <i>people</i></div>
+    <div><b id="c-coll">—</b> <i>collapsed</i></div>
+  </div>
+</header>
+
+<form id="ask">
+  <span class="prompt">?</span>
+  <input id="q" autocomplete="off" spellcheck="false"
+         placeholder="ask anything about the corpus…">
+  <button id="go" type="submit">trace</button>
+</form>
+
+<main>
+  <div id="stage">
+    <canvas id="cv"></canvas>
+    <div class="hint" id="hint">
+      <p class="big">the graph draws itself as the question is answered</p>
+      <p>documents land in amber, people resolve in teal, and every alias that
+         collapses onto a person keeps the evidence that put it there.</p>
+      <p>try <code data-q="who owns the audit-log shipper sidecar?">who owns the audit-log shipper sidecar?</code></p>
+    </div>
+  </div>
+
+  <aside>
+    <div class="block" id="ans-block" hidden>
+      <h2 id="ans-head">answer</h2>
+      <div id="ans" class="answer"></div>
+      <div id="ans-src" class="sources"></div>
+    </div>
+    <div class="block"><h2>trace</h2><div id="trace"></div></div>
+    <div class="block" id="who-block" hidden><h2>who</h2><div id="who"></div></div>
+    <div class="block" id="ev-block" hidden><h2>evidence</h2><div id="ev"></div></div>
+    <div class="block" id="conn-block" hidden><h2>connections found by hydradb</h2><div id="conn"></div></div>
+  </aside>
+</main>
+
+<script>
+// ── graph ────────────────────────────────────────────────────────────────
+// A small purpose-built force simulation. Not a graph library: we only ever
+// draw what one question touched — tens of nodes, not the whole corpus — so a
+// general renderer would be more code and more weight than the thing it draws.
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+let W = 0, H = 0, DPR = Math.min(devicePixelRatio || 1, 2);
+const nodes = new Map(), links = [];
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// Simulated annealing. Without it the layout never stops: repulsion and the
+// springs reach equilibrium but keep overshooting it every frame, so the whole
+// graph shivers permanently. `alpha` scales every force and decays to zero, so
+// the picture settles and then holds still — and gets reheated whenever new
+// nodes arrive and there is genuinely something to re-arrange.
+let alpha = 0;
+const reheat = (v = 0.85) => { alpha = Math.max(alpha, v); };
+
+function resize(){
+  const r = cv.parentElement.getBoundingClientRect();
+  W = r.width; H = r.height;
+  cv.width = W * DPR; cv.height = H * DPR;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+addEventListener('resize', () => { resize(); reheat(0.4); });
+
+function addNode(id, kind, label, meta){
+  if (nodes.has(id)) return nodes.get(id);
+  meta = meta || {};
+  // Aliases enter beside the person they belong to, then get pulled in — the
+  // collapse is the thing worth watching, so it has to be a movement, not a
+  // node that simply appears already attached.
+  let x, y;
+  const host = meta.entity ? nodes.get(meta.entity) : null;
+  if (host){
+    const a = Math.random() * Math.PI * 2, r = 130 + Math.random()*70;
+    x = host.x + Math.cos(a)*r; y = host.y + Math.sin(a)*r;
+  } else {
+    const a = Math.random() * Math.PI * 2, r = Math.min(W, H) * 0.42;
+    x = W/2 + Math.cos(a)*r; y = H/2 + Math.sin(a)*r;
+  }
+  const n = {
+    id, kind, label, meta,
+    x, y, vx: 0, vy: 0, born: performance.now(),
+    radius: kind === 'entity' ? 8 + Math.min(7, (meta.alias_count||1)) :
+            kind === 'alias'  ? 3 : 4.5
+  };
+  nodes.set(id, n);
+  if (kind === 'alias' && meta.entity){
+    links.push({a: id, b: meta.entity, kind: 'alias', born: performance.now()});
+    // Mark the person so a ring expands out of them as the surface arrives.
+    // This is the one thing on the canvas worth noticing — a scattered string
+    // being claimed by a human being — so it gets an explicit beat.
+    if (host) host.pulse = performance.now();
+  }
+  reheat();
+  return n;
+}
+function addLink(a, b){
+  if (!nodes.has(a) || !nodes.has(b)) return;
+  links.push({a, b, kind: 'doc', born: performance.now()});
+  reheat(0.5);
+}
+
+function tick(){
+  if (alpha < 0.005){ alpha = 0; return; }   // settled — hold perfectly still
+  const arr = [...nodes.values()];
+
+  for (let i = 0; i < arr.length; i++){
+    const n = arr[i];
+    n.vx += (W/2 - n.x) * 0.0022 * alpha;
+    n.vy += (H/2 - n.y) * 0.0022 * alpha;
+    for (let j = i+1; j < arr.length; j++){
+      const m = arr[j];
+      // Aliases of the same person must not shove each other apart, or they
+      // never visibly gather.
+      const kin = n.meta.entity && n.meta.entity === m.meta.entity;
+      const dx = n.x - m.x, dy = n.y - m.y;
+      const d2 = dx*dx + dy*dy || 0.01;
+      if (d2 < 36000){
+        const f = (kin ? 90 : 640) / d2 * alpha;
+        n.vx += dx*f; n.vy += dy*f; m.vx -= dx*f; m.vy -= dy*f;
+      }
+    }
+  }
+  for (const l of links){
+    const a = nodes.get(l.a), b = nodes.get(l.b);
+    if (!a || !b) continue;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const d = Math.hypot(dx, dy) || 0.01;
+    // A short, stiff spring for aliases: they snap home. A long, slack one for
+    // documents: they hang off the people who appear in them.
+    const rest = l.kind === 'alias' ? 34 : 132;
+    const k    = l.kind === 'alias' ? 0.055 : 0.009;
+    const f = (d - rest) * k * alpha, fx = dx/d*f, fy = dy/d*f;
+    a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+  }
+  for (const n of arr){
+    n.vx *= 0.80; n.vy *= 0.80;
+    // Kill residual motion outright. Damping alone only ever approaches zero,
+    // and a tenth of a pixel per frame still reads as a shiver.
+    if (Math.abs(n.vx) < 0.03) n.vx = 0;
+    if (Math.abs(n.vy) < 0.03) n.vy = 0;
+    n.x += n.vx; n.y += n.vy;
+    const p = 30;
+    n.x = Math.max(p, Math.min(W-p, n.x));
+    n.y = Math.max(p, Math.min(H-p, n.y));
+  }
+  alpha *= 0.978;
+}
+
+const COLOR = {entity:'#5FD3C4', document:'#F0C674', alias:'#7C8DA6'};
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  const now = performance.now();
+
+  for (const l of links){
+    const a = nodes.get(l.a), b = nodes.get(l.b);
+    if (!a || !b) continue;
+    const age = Math.min(1, (now - l.born) / 420);
+    if (l.kind === 'alias'){
+      // Brighten while the alias is still travelling, then settle: the line
+      // is the act of resolution, not a permanent decoration.
+      const settling = Math.max(0, 1 - (now - l.born) / 2600);
+      ctx.strokeStyle = `rgba(95,211,196,${0.10 + 0.45*settling})`;
+      ctx.lineWidth = 1 + settling;
+    } else {
+      ctx.strokeStyle = `rgba(240,198,116,${0.05 + 0.08*age})`;
+      ctx.lineWidth = 1;
+    }
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(a.x + (b.x-a.x)*age, a.y + (b.y-a.y)*age);
+    ctx.stroke();
+  }
+  ctx.lineWidth = 1;
+
+  const arr = [...nodes.values()].sort((p,q) =>
+    (p.kind === 'entity') - (q.kind === 'entity'));   // people drawn on top
+
+  for (const n of arr){
+    const age = reduce ? 1 : Math.min(1, (now - n.born) / 520);
+    const ease = 1 - Math.pow(1-age, 3);
+    const r = n.radius * ease;
+    const c = COLOR[n.kind] || '#7C8DA6';
+
+    if (n.kind === 'entity'){
+      ctx.beginPath(); ctx.arc(n.x, n.y, r + 9*ease, 0, 6.284);
+      ctx.fillStyle = 'rgba(95,211,196,0.08)'; ctx.fill();
+
+      // A ring for each surface just claimed, expanding and fading out.
+      if (n.pulse && !reduce){
+        const t = (now - n.pulse) / 900;
+        if (t < 1){
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, r + 10 + t * 34, 0, 6.284);
+          ctx.strokeStyle = `rgba(95,211,196,${0.5 * (1 - t)})`;
+          ctx.lineWidth = 1.5 * (1 - t);
+          ctx.stroke();
+          ctx.lineWidth = 1;
+        } else n.pulse = 0;
+      }
+    }
+    ctx.beginPath();
+    if (n.kind === 'document'){ ctx.rect(n.x-r, n.y-r, r*2, r*2); }
+    else { ctx.arc(n.x, n.y, r, 0, 6.284); }
+    ctx.fillStyle = c;
+    ctx.globalAlpha = (n.kind === 'alias' ? 0.65 : 0.92) * ease;
+    ctx.fill(); ctx.globalAlpha = 1;
+
+    ctx.textAlign = 'center';
+    if (n.kind === 'entity' && age > 0.5){
+      ctx.font = '600 12px ui-monospace,Menlo,monospace';
+      ctx.fillStyle = `rgba(232,237,245,${(age-0.5)/0.5 * 0.95})`;
+      ctx.fillText(n.label.slice(0, 24), n.x, n.y - r - 13);
+    } else if (n.kind === 'alias' && age > 0.6){
+      ctx.font = '10px ui-monospace,Menlo,monospace';
+      ctx.fillStyle = `rgba(124,141,166,${(age-0.6)/0.4 * 0.8})`;
+      ctx.fillText(n.label.slice(0, 20), n.x, n.y - 8);
+    }
+  }
+  tick();
+  requestAnimationFrame(draw);
+}
+resize(); requestAnimationFrame(draw);
+
+// ── panels ───────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function step(what, num, ms){
+  $('trace').insertAdjacentHTML('beforeend',
+    `<div class="step"><span class="tick">▸</span><span class="what">${esc(what)}</span>` +
+    `<span class="num">${esc(num ?? '')}</span><span class="ms">${ms != null ? ms+'ms' : ''}</span></div>`);
+}
+function reset(){
+  queue.length = 0; playing = false; streamEnded = false;
+  $('ans-block').hidden = true; $('ans').innerHTML = ''; $('ans-src').innerHTML = '';
+  nodes.clear(); links.length = 0; alpha = 0;
+  for (const id of ['trace','who','ev','conn']) $(id).innerHTML = '';
+  for (const id of ['who-block','ev-block','conn-block']) $(id).hidden = true;
+  $('hint').style.display = 'none';
+}
+
+// ── ask ──────────────────────────────────────────────────────────────────
+let source = null;
+function run(question){
+  if (!question.trim()) return;
+  if (source) source.close();
+  reset();
+  $('go').disabled = true; $('go').textContent = 'tracing';
+
+  streamEnded = false;
+  source = new EventSource('/api/ask?q=' + encodeURIComponent(question));
+  source.onmessage = e => enqueue(JSON.parse(e.data));
+  source.onerror = () => { streamEnded = true; if (!playing) finish(); };
+}
+
+// ── playback ─────────────────────────────────────────────────────────────
+// The pipeline answers in well under a second, so every event arrives at
+// effectively the same instant and the whole graph would appear in one frame.
+// Buffering and playing them out on a timeline is a presentation choice, not a
+// delay: the numbers in the trace are measured server-side and stay true, while
+// the canvas runs at a speed a person can actually follow.
+const queue = [];
+let playing = false, streamEnded = false;
+
+// Each kind of event gets its own beat. Documents fall like rain; a person
+// lands and is given a moment before the surfaces that make them up fly in.
+const BEAT = {document: 55, entity: 230, alias: 95, link: 16, path: 170,
+              answer_chunk: 0, writing: 120, answer: 0};
+
+function enqueue(ev){
+  queue.push(ev);
+  if (!playing){ playing = true; drain(); }
+}
+function drain(){
+  const ev = queue.shift();
+  if (!ev){
+    playing = false;
+    if (streamEnded) finish();
+    return;
+  }
+  render(ev);
+  // Never let a backlog turn into a wait: if events have piled up, play them
+  // faster rather than making the viewer sit through a fixed schedule.
+  const scale = queue.length > 40 ? 0.2 : queue.length > 18 ? 0.5 : 1;
+  setTimeout(drain, (BEAT[ev.type] ?? 45) * scale);
+}
+
+function render(ev){
+    switch (ev.type){
+      case 'recall':
+        step('searched the corpus', ev.documents + ' docs', ev.ms);
+        if (ev.terms?.length)
+          step('kept only rare terms', ev.terms.slice(0,4).join(' '));
+        break;
+      case 'document':
+        addNode(ev.id, 'document', ev.title, ev);
+        $('ev-block').hidden = false;
+        $('ev').insertAdjacentHTML('beforeend',
+          `<div class="doc"><span class="src">${esc(ev.source)}</span>` +
+          `<span class="t">${esc(ev.title)}</span></div>`);
+        break;
+      case 'surfaces':
+        step('identity surfaces found', ev.count);
+        break;
+      case 'entity': {
+        addNode(ev.id, 'entity', ev.name, ev);
+        $('who-block').hidden = false;
+        const many = ev.alias_count > 1;
+        $('who').insertAdjacentHTML('beforeend',
+          `<div class="person" id="p-${esc(ev.id)}"><div class="name">${esc(ev.name)}` +
+          `<span class="badge ${many?'':'one'}">${many ? ev.alias_count+' aliases' : 'single surface'}</span></div>` +
+          `<div class="aliases"></div></div>`);
+        break;
+      }
+      case 'alias': {
+        addNode(ev.id, 'alias', ev.surface, ev);
+        const box = document.querySelector(`#p-${CSS.escape(ev.entity)} .aliases`);
+        if (box) box.insertAdjacentHTML('beforeend',
+          `<span class="alias" title="${esc(ev.signals)} · ${ev.score}">${esc(ev.surface)}` +
+          `<em>${esc((ev.signals||'').split('+')[0].toLowerCase().replace(/_/g,' '))}</em></span>`);
+        break;
+      }
+      case 'resolved':
+        step('people resolved', ev.people + (ev.collapsed ? ` (${ev.collapsed} collapsed)` : ''), ev.ms);
+        if (ev.shown < ev.people) step('drawing the closest', ev.shown);
+        break;
+      case 'link':
+        addLink(ev.from, ev.to);
+        break;
+      case 'writing':
+        $('ans-block').hidden = false;
+        $('ans-block').classList.remove('no');
+        $('ans-head').textContent = 'answer';
+        $('ans').textContent = '';
+        step('composing the answer', '');
+        break;
+      case 'answer_chunk':
+        $('ans').textContent += ev.text;
+        break;
+      case 'answer': {
+        // Re-render once complete so citations become chips rather than
+        // literal bracket characters in the middle of a sentence.
+        $('ans').innerHTML = esc(ev.text).replace(/\[(\d+)\]/g, '<cite>$1</cite>');
+        if (ev.abstained){
+          $('ans-block').classList.add('no');
+          $('ans-head').textContent = 'not in the corpus';
+        }
+        $('ans-src').innerHTML = (ev.sources || []).map(sc =>
+          `<div><b>${sc.n}</b><span>${esc(sc.cite)}</span></div>`).join('');
+        break;
+      }
+      case 'path':
+        $('conn-block').hidden = false;
+        $('conn').insertAdjacentHTML('beforeend',
+          `<div class="conn"><b>${esc(ev.a)}</b> ─ <span class="via">${esc((ev.via?.[0]||'').slice(0,44))}</span> ─ <b>${esc(ev.b)}</b></div>`);
+        break;
+      case 'abstain':
+        step('abstained', ev.gate, ev.ms);
+        $('who-block').hidden = false;
+        $('who').innerHTML =
+          `<div class="abstain"><div class="gate">${esc(ev.gate)} gate</div><p>${esc(ev.reason)}</p></div>`;
+        finish();
+        break;
+      case 'done':
+        step('paths walked by hydradb', ev.paths, ev.ms);
+        finish();
+        break;
+      case 'degraded':
+        step('graph traversal unavailable', ev.step);
+        break;
+      case 'error':
+        // Keep the raw text out of the panel; a wall of Cypher tells the
+        // reader nothing about what to do next.
+        step('failed', ev.message.split(':')[0].slice(0, 40));
+        console.error('[glasshouse]', ev.message);
+        finish();
+        break;
+    }
+}
+function finish(){
+  if (source) { source.close(); source = null; }
+  $('go').disabled = false; $('go').textContent = 'trace';
+}
+
+$('ask').addEventListener('submit', e => { e.preventDefault(); run($('q').value); });
+document.addEventListener('click', e => {
+  const c = e.target.closest('code[data-q]');
+  if (c) { $('q').value = c.dataset.q; run(c.dataset.q); }
+});
+
+fetch('/api/stats').then(r => r.json()).then(s => {
+  const fmt = n => (n||0).toLocaleString();
+  $('c-docs').textContent = fmt(s.documents);
+  $('c-ents').textContent = fmt(s.entities);
+  $('c-coll').textContent = fmt(s.collapsed);
+}).catch(()=>{});
+</script>
+</body>
+</html>

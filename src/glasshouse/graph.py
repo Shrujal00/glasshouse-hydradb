@@ -138,12 +138,26 @@ class GraphEngine:
                 "Content-Type": "application/json",
             },
         )
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                body = json.loads(response.read().decode())
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode()[:500]
-            raise GraphError(f"{exc.code} on `{cypher[:90]}`: {detail}") from None
+        # The engine occasionally answers a perfectly valid statement with
+        # `internal query execution error`, and the same statement succeeds a
+        # moment later. Retry those rather than surfacing a transient hiccup as
+        # a failed answer; anything the parser rejects is deterministic and is
+        # raised on the first attempt.
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    body = json.loads(response.read().decode())
+                break
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode()[:500]
+                transient = exc.code >= 500 or "internal" in detail
+                if not transient or attempt == 2:
+                    raise GraphError(f"{exc.code} on `{cypher[:90]}`: {detail}") from None
+                time.sleep(0.25 * (attempt + 1))
+            except (urllib.error.URLError, TimeoutError) as exc:
+                if attempt == 2:
+                    raise GraphError(f"unreachable on `{cypher[:90]}`: {exc}") from None
+                time.sleep(0.25 * (attempt + 1))
 
         rows = body.get("rows") or body.get("data") or []
         columns = body.get("columns") or []

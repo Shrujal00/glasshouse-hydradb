@@ -187,7 +187,7 @@ class LocalRecall:
         self.conn.commit()
         return df
 
-    def selective_terms(self, question: str) -> list[str]:
+    def selective_terms(self, question: str, mute: Sequence[str] = ()) -> list[str]:
         """The terms in a question worth actually searching for.
 
         Anything matching more than `MAX_DF_FRACTION` of the corpus is
@@ -196,8 +196,17 @@ class LocalRecall:
         and `api` (182k) while keeping `multipart` (1,813) — which is the
         difference between a three-second search and a fast one.
         """
+        # Mute before selecting, never after. The rarest-terms fallback runs
+        # over whatever is left, so removing the person's name afterwards threw
+        # away the good terms and kept the filler: "what did Jonas Weber say
+        # about capacity" ended up searching for `say` and `did`.
+        muted = {w for phrase in mute for w in phrase.split()}
         ceiling = (self.count() or 1) * MAX_DF_FRACTION
-        scored = [(t, self.document_frequency(t)) for t in query_terms(question)]
+        scored = [
+            (t, self.document_frequency(t))
+            for t in query_terms(question)
+            if t not in muted
+        ]
         present = [(t, df) for t, df in scored if df > 0]
         keep = [t for t, df in present if df <= ceiling]
         if len(keep) < MIN_TERMS:
@@ -205,16 +214,48 @@ class LocalRecall:
             keep = [t for t, _ in sorted(present, key=lambda x: x[1])[:MIN_TERMS]]
         return keep
 
-    def search(self, question: str, limit: int = 20, source: str | None = None) -> list[Candidate]:
+    def search(
+        self,
+        question: str,
+        limit: int = 20,
+        source: str | None = None,
+        also: Sequence[str] = (),
+        drop: Sequence[str] = (),
+    ) -> list[Candidate]:
         """The `limit` best-matching documents for a question.
 
         The title is weighted 4x the body: in this corpus the subject line
         often carries the answer the body only gestures at.
+
+        `also` carries terms the caller has established are worth searching for
+        even though the question did not contain them — in practice, the other
+        names a person is known by. They bypass the frequency filter: a
+        surname can be common in the corpus and still be the most important
+        thing in the query, because it is the thing that identifies who is
+        being asked about.
         """
-        terms = self.selective_terms(question)
-        if not terms:
+        # Words belonging to the person being asked about are removed from the
+        # topic half. Left in, they appear on both sides of the conjunction and
+        # it collapses to "any document mentioning this person at all" — which
+        # is how "what did Jonas Weber say about capacity" returned twenty
+        # documents about onboarding and invoices.
+        terms = self.selective_terms(question, mute=drop)
+        extra = [t for t in dict.fromkeys(also) if t]
+        if not terms and not extra:
             return []
-        match = " OR ".join(f'"{t}"' for t in terms)
+
+        if terms and extra:
+            # Conjunction, not union. OR-ing twenty of a person's email
+            # addresses into the query buries the subject of the question
+            # entirely — every document they ever appeared in outranks the
+            # documents about the thing being asked. What is wanted is
+            # narrower than either half: documents about this topic that
+            # mention this person *under any of their names*.
+            topic = " OR ".join(f'"{t}"' for t in terms)
+            who = " OR ".join(f'"{t}"' for t in extra)
+            match = f"({topic}) AND ({who})"
+        else:
+            match = " OR ".join(f'"{t}"' for t in (terms or extra))
         sql = (
             "SELECT doc_id, source, title, body, date, bm25(docs, 0.0, 0.0, 4.0, 1.0) AS rank"
             " FROM docs WHERE docs MATCH ?"

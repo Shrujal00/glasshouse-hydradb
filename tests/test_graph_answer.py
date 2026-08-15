@@ -47,7 +47,7 @@ def test_build_prompt_with_paths():
         }
     ]
     prompt = build_prompt("who owns billing?", [FakeDoc()], [FakePerson()], paths=paths)
-    assert "Graph connections found by HydraDB" in prompt
+    assert "Graph co-occurrences found by HydraDB" in prompt
     assert "Alice Smith — Billing ADR #42 — Bob Jones" in prompt
     assert "Billing ADR #42" in prompt
 

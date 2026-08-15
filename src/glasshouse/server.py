@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from .ask import Asker
@@ -83,11 +83,17 @@ def entity(eid: str) -> dict:
     ontology exists to answer, and answering it by traversal is the difference
     between a stored result and a queryable one.
     """
-    rows = asker().engine.query(
+    current = asker()
+    match = current.lookup.execute(
+        "SELECT DISTINCT node_id FROM alias WHERE eid = ? LIMIT 2", (eid,)
+    ).fetchall()
+    if len(match) != 1:
+        raise HTTPException(status_code=404, detail="entity not found")
+    rows = current.engine.query(
         "MATCH (a:Alias)-[r:RESOLVES_TO]->(e:Entity {id: $id}) "
         "RETURN a.surface AS surface, a.kind AS kind, a.occurrences AS occurrences, "
         "r.score AS score, r.signals AS signals ORDER BY occurrences DESC",
-        {"id": eid},
+        {"id": int(match[0]["node_id"])},
         strong=True,
     )
     return {"eid": eid, "aliases": [r.values for r in rows]}

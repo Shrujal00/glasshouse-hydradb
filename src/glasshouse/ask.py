@@ -50,6 +50,13 @@ PRIORS = STATE / "priors.json"
 # corpus, and past roughly this many the picture stops being readable.
 TOP_PEOPLE = 8
 
+# Generic role vocabulary supplements the corpus-learned functional-mailbox
+# prior when an ontology alias spells out the role rather than its mailbox.
+_ROLE_WORD = frozenset(
+    "admin billing compliance customer finance help onboarding operations ops security support team".split()
+    + ["lead"]
+)
+
 
 def _identifier_shaped(phrase: str) -> bool:
     """Whether a phrase could plausibly be somebody's name or account.
@@ -66,6 +73,21 @@ def _identifier_shaped(phrase: str) -> bool:
     if " " in phrase:
         return True
     return bool(re.search(r"[@._\d-]", phrase))
+
+
+def _role_alias(phrase: str) -> bool:
+    return len(phrase.split()) > 1 and bool(set(phrase.split()) & _ROLE_WORD)
+
+
+def document_mentions(person: "Person", document: Candidate) -> bool:
+    """Match a resolved surface only when the document parser emitted it."""
+    found = parse_document_text(document.text, document.source)
+    fields = {
+        value.lower()
+        for values in found.values()
+        for value in values
+    }
+    return bool(person.surfaces & fields)
 
 
 @dataclass(slots=True)
@@ -217,6 +239,8 @@ class Asker:
                 phrase = " ".join(words[i : i + size])
                 if not _identifier_shaped(phrase):
                     continue
+                if _role_alias(phrase):
+                    continue
                 rows = self.lookup.execute(
                     "SELECT DISTINCT eid, node_id, canonical_name, confidence, alias_count"
                     " FROM alias WHERE surface = ? LIMIT 2",
@@ -228,14 +252,16 @@ class Asker:
                 # A person with one surface form has nothing to expand to.
                 if int(r["alias_count"]) < 2 or r["eid"] in seen:
                     continue
-                # Require an address. Resolution produced a few entities that
-                # are really topics — "Capacity Planning" among them — and a
-                # topic dragged into the identity half of the query poisons it.
-                # A real person has a mailbox; a subject heading does not.
-                has_mail = self.lookup.execute(
-                    "SELECT 1 FROM alias WHERE eid = ? AND kind = 'email' LIMIT 1", (r["eid"],)
-                ).fetchone()
-                if not has_mail:
+                mailboxes = self.lookup.execute(
+                    "SELECT surface FROM alias WHERE eid = ? AND kind = 'email'", (r["eid"],)
+                ).fetchall()
+                # Role aliases can have an address too. The resolver learned
+                # functional mailbox localparts from the corpus, so reject the
+                # entire entity rather than expanding its display-name alias.
+                if not mailboxes or any(
+                    self.priors.is_functional(mailbox["surface"].partition("@")[0])
+                    for mailbox in mailboxes
+                ):
                     continue
                 seen[r["eid"]] = Person(
                     eid=r["eid"],
@@ -309,7 +335,7 @@ class Asker:
         edges = []
         for person in people:
             for d in docs:
-                if any(s in d.text.lower() for s in person.surfaces):
+                if document_mentions(person, d):
                     edges.append(
                         {
                             "src": person.node,
@@ -454,7 +480,7 @@ class Asker:
         # Which people appear in which documents — the edges the canvas draws.
         for p in people:
             for d in docs:
-                if any(s in d.text.lower() for s in p.surfaces):
+                if document_mentions(p, d):
                     yield {
                         "type": "link",
                         "from": f"ent:{p.eid}",

@@ -1,0 +1,97 @@
+{
+  "probe": {
+    "procedure": "algo.SPpaths",
+    "query": "CALL algo.SPpaths({sourceNode: 4695611152507009663, targetNode: 3849059664613758686, relTypes: ['RESOLVES_TO'], relDirection: 'both', maxLen: 1, pathCount: 1}) YIELD path, pathWeight, pathCost RETURN path, pathWeight, pathCost",
+    "consistency": "strong",
+    "note": "Recorded against ghcr.io/hydra-db/hydradb:latest (reported version 0.1.0) on 2026-08-15. The HTTP response uses columns plus positional rows; paths are typed cells and nested property values use title-cased type tags."
+  },
+  "response": {
+    "query_id": "http-query-9",
+    "columns": [
+      "path",
+      "pathWeight",
+      "pathCost"
+    ],
+    "rows": [
+      [
+        {
+          "type": "path",
+          "value": {
+            "nodes": [
+              {
+                "id": 4695611152507009663,
+                "labels": [
+                  "Alias"
+                ],
+                "properties": {
+                  "kind": {
+                    "String": "name"
+                  },
+                  "occurrences": {
+                    "Integer": 158563
+                  },
+                  "surface": {
+                    "String": "marissa cole"
+                  }
+                }
+              },
+              {
+                "id": 3849059664613758686,
+                "labels": [
+                  "Entity"
+                ],
+                "properties": {
+                  "alias_count": {
+                    "Integer": 2
+                  },
+                  "canonical_name": {
+                    "String": "Marissa Cole"
+                  },
+                  "confidence": {
+                    "Float": 0.999
+                  },
+                  "eid": {
+                    "String": "ent_000000"
+                  },
+                  "occurrences": {
+                    "Integer": 158565
+                  }
+                }
+              }
+            ],
+            "relationships": [
+              {
+                "id": 781,
+                "edge_type": "RESOLVES_TO",
+                "src": 4695611152507009663,
+                "dst": 3849059664613758686,
+                "properties": {
+                  "id": {
+                    "Integer": 7185660674471132265
+                  },
+                  "score": {
+                    "Float": 0.999
+                  },
+                  "signals": {
+                    "String": "STATED_BINDING+LOCAL_EQUALS_NAME"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "type": "integer",
+          "value": 1
+        },
+        {
+          "type": "integer",
+          "value": 0
+        }
+      ]
+    ],
+    "read_epoch": 760,
+    "next_cursor": null,
+    "bookmark": "sgk:1:64656661756c74:64656661756c74:63656c6c2d30:760"
+  }
+}

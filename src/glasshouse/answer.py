@@ -50,10 +50,8 @@ Rules, in order of importance:
    the number, name, threshold, or endpoint — not with preamble.
 4. Cite the documents you used by their bracketed number, like [2].
 5. Never invent a citation. Never cite a document you did not use.
-6. If graph connections are provided, use them to reason about how people relate
-   to each other and to documents. A graph path connecting two people through a
-   document is evidence that they collaborate on or co-own whatever that
-   document concerns.
+6. Graph connections show only that entities co-occur in a document. They do
+   not prove collaboration, ownership, agreement, or responsibility.
 
 Be terse. No preamble, no restating the question, no "based on the documents"."""
 
@@ -82,10 +80,8 @@ def build_prompt(
     """Lay out the evidence, identities first, graph connections last.
 
     When `paths` is supplied the model sees the multi-hop connections
-    HydraDB found between the people this question reached.  That
-    evidence can change the answer: a path linking two people through
-    a shared document is proof of collaboration that a keyword search
-    would miss.
+    HydraDB found between the people this question reached. A shared document
+    establishes co-occurrence only, not collaboration, ownership, or agreement.
     """
     lines: list[str] = []
 
@@ -105,7 +101,7 @@ def build_prompt(
 
     path_list = list(paths or ())
     if path_list:
-        lines.append("\nGraph connections found by HydraDB (entity relationships across documents):")
+        lines.append("\nGraph co-occurrences found by HydraDB (shared documents only):")
         for p in path_list[:6]:
             lines.append(f"  {p.get('summary', '')}")
             via = p.get("via") or []
@@ -165,7 +161,9 @@ def write_streaming(
     The abstention token is stripped from the visible stream: it is a control
     signal for us, not something to show the reader.
     """
-    buffer: list[str] = []
+    full: list[str] = []
+    pending = ""
+    checking_marker = True
     stream = _client().chat(
         model=model or ADJUDICATION_MODEL,
         messages=[
@@ -179,11 +177,25 @@ def write_streaming(
         piece = part.get("message", {}).get("content", "")
         if not piece:
             continue
-        buffer.append(piece)
+        full.append(piece)
         # Hold the opening back until it is clear whether it is the abstention
         # marker, so the token never flashes on screen.
-        joined = "".join(buffer)
-        if len(joined) < len(NOT_FOUND) and NOT_FOUND.startswith(joined.strip()):
+        if checking_marker:
+            pending += piece
+            if NOT_FOUND.startswith(pending):
+                continue
+            if pending.startswith(NOT_FOUND):
+                checking_marker = False
+                visible = pending[len(NOT_FOUND) :].lstrip(" :.—-")
+                pending = ""
+                if visible:
+                    yield {"chunk": visible}
+                continue
+            checking_marker = False
+            yield {"chunk": pending}
+            pending = ""
             continue
         yield {"chunk": piece}
-    yield {"done": _finish("".join(buffer))}
+    if pending:
+        yield {"chunk": pending}
+    yield {"done": _finish("".join(full))}

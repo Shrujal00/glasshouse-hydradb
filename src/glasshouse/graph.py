@@ -70,6 +70,17 @@ class Row:
         return self.values[name]
 
 
+@dataclass(frozen=True, slots=True)
+class GraphCandidate:
+    """A document reached from a resolved entity, not evidence of its contents."""
+
+    doc_id: str
+    seed_eids: tuple[str, ...]
+    path: dict[str, Any]
+    hops: int
+    reason: str
+
+
 def _unwrap(cell: Any) -> Any:
     """Values arrive as {"type": ..., "value": ...}; paths nest the same shape."""
     if not isinstance(cell, dict) or "value" not in cell:
@@ -313,3 +324,82 @@ class GraphEngine:
             strong=True,
         )
         return [{"path": r.values.get("path"), "cost": r.values.get("pathCost")} for r in rows]
+
+    def documents_for_entities(
+        self, seeds: Sequence[tuple[str, int]], limit: int = 200
+    ) -> list[GraphCandidate]:
+        """Return direct Entity-to-Document neighbors for resolved query entities.
+
+        This anchored query intentionally avoids global Document or relationship
+        scans, which exceed the engine's admission limits on the loaded corpus.
+        """
+        if not seeds or limit <= 0:
+            return []
+        rows_by_seed: list[tuple[str, int, list[tuple[str, int]]]] = []
+        by_doc: dict[str, list[tuple[str, int, int]]] = {}
+        for eid, seed_id in seeds:
+            # The current engine rejects labeled node patterns after UNWIND, so
+            # batching is one bounded anchored query per seed rather than one
+            # unsupported set query.
+            rows = self.query(
+                "MATCH (e:Entity {id: $id})-[:MENTIONED_IN]->(d:Document) "
+                "RETURN e.id AS seed_id, d.id AS document_node, d.doc_id AS doc_id "
+                f"LIMIT {limit}",
+                {"id": seed_id},
+                strong=True,
+            )
+            reached: list[tuple[str, int]] = []
+            for row in rows:
+                doc_id = str(row.values.get("doc_id") or "")
+                document_node = int(row.values.get("document_node") or -1)
+                if doc_id:
+                    reached.append((doc_id, document_node))
+            rows_by_seed.append((eid, seed_id, reached))
+
+        # Round-robin keeps one high-degree entity from consuming the entire
+        # scope and still lets shared documents accumulate all seed paths.
+        for rank in range(limit):
+            for eid, seed_id, reached in rows_by_seed:
+                if rank < len(reached):
+                    doc_id, document_node = reached[rank]
+                    by_doc.setdefault(doc_id, []).append((eid, seed_id, document_node))
+
+        candidates: list[GraphCandidate] = []
+        for doc_id, reached in list(by_doc.items())[:limit]:
+            seed_eids = tuple(sorted({eid for eid, _, _ in reached}))
+            paths = []
+            seen_seeds: set[str] = set()
+            for eid, seed_id, document_node in reached:
+                if eid in seen_seeds:
+                    continue
+                seen_seeds.add(eid)
+                paths.append(
+                    {
+                        "seed_eid": eid,
+                        "nodes": [
+                            {"id": seed_id, "labels": ["Entity"]},
+                            {
+                                "id": document_node,
+                                "labels": ["Document"],
+                                "properties": {"doc_id": doc_id},
+                            },
+                        ],
+                        "relationships": [
+                            {
+                                "edge_type": "MENTIONED_IN",
+                                "src": seed_id,
+                                "dst": document_node,
+                            }
+                        ],
+                    }
+                )
+            candidates.append(
+                GraphCandidate(
+                    doc_id=doc_id,
+                    seed_eids=seed_eids,
+                    path={"paths": paths},
+                    hops=1,
+                    reason="direct Entity-[:MENTIONED_IN]->Document reachability",
+                )
+            )
+        return candidates

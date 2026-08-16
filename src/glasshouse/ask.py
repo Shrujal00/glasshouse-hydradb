@@ -6,15 +6,11 @@ watched rather than merely trusted:
     recall     half a million documents -> ~20 candidates      (local, ~50ms)
     identify   the identity surfaces those documents contain
     resolve    surfaces -> canonical people, via the ontology  (~1ms)
-    connect    write what this question touched into HydraDB,
-               then ask HydraDB how the entities connect
+    graph      retrieve direct document neighbors from the offline HydraDB graph
     answer     cited answer, or an honest account of what is missing
 
-The ontology grows as it is used. Documents and their entity links are written
-into the graph at question time, for the handful of documents a question
-actually reaches, rather than by a batch pass over the whole corpus. That means
-the system answers its first question seconds after the index exists, and the
-graph accumulates exactly the parts of the corpus anybody asked about.
+Documents and entity links are loaded offline. Query-time code only reads that
+graph, so HydraDB can add evidence that lexical retrieval never reached.
 
 What resolution *cannot* be done locally is the ambiguity check. Whether
 `@priya` names one person depends on how many Priyas exist across all 500k
@@ -40,7 +36,7 @@ from . import answer
 from .config import STATE
 from .corpus import parse_document_text
 from .priors import Priors
-from .graph import GraphEngine, node_id
+from .graph import GraphCandidate, GraphEngine
 from .recall import Candidate, LocalRecall
 
 LOOKUP = STATE / "ontology.sqlite3"
@@ -49,6 +45,8 @@ PRIORS = STATE / "priors.json"
 # How many people to draw. The canvas shows what the question touched, not the
 # corpus, and past roughly this many the picture stops being readable.
 TOP_PEOPLE = 8
+GRAPH_SCOPE_LIMIT = 200
+GRAPH_SEED_LIMIT = 8
 
 # Generic role vocabulary supplements the corpus-learned functional-mailbox
 # prior when an ontology alias spells out the role rather than its mailbox.
@@ -98,7 +96,11 @@ class Event:
     detail: dict
 
     def line(self) -> str:
-        bits = " ".join(f"{k}={v}" for k, v in self.detail.items() if k != "items")
+        bits = " ".join(
+            f"{key}={value}"
+            for key, value in self.detail.items()
+            if key not in {"items", "path"}
+        )
         return f"{self.kind:18s} {bits}"
 
 
@@ -124,9 +126,13 @@ class Answer:
     events: list[Event]
     abstained: str | None = None
     elapsed: float = 0.0
+    text: str = ""
+    cited: list[int] = field(default_factory=list)
 
     def render(self) -> str:
         out: list[str] = []
+        if self.text and not self.abstained:
+            out.extend(("ANSWER", f"  {self.text}"))
         if self.abstained:
             out.append(f"NOT ANSWERABLE FROM THE CORPUS — {self.abstained}")
             if self.documents:
@@ -142,12 +148,30 @@ class Answer:
             out.append("\nEVIDENCE")
         for d in self.documents[:6]:
             out.append(f"  [{d.source}] {d.cite()}")
+        if self.cited:
+            out.append("\nCITED SOURCES")
+            for n in self.cited:
+                if 1 <= n <= len(self.documents):
+                    out.append(f"  [{n}] {self.documents[n - 1].cite()}")
         if self.paths:
             out.append("\nCONNECTIONS FOUND BY HYDRADB")
             for p in self.paths[:6]:
                 out.append(f"  {p['summary']}")
         out.append(f"\n({self.elapsed*1000:.0f}ms)")
         return "\n".join(out)
+
+
+@dataclass(slots=True)
+class RetrievalResult:
+    """The independent retrieval ablations retained for inspection and scoring."""
+
+    plain_docs: list[Candidate]
+    identity_docs: list[Candidate]
+    graph_docs: list[Candidate]
+    final_docs: list[Candidate]
+    named_entities: list[Person]
+    graph_candidates: list[GraphCandidate]
+    graph_error: str | None = None
 
 
 class Asker:
@@ -232,33 +256,47 @@ class Asker:
         everyone called Sam and drown the question — the ambiguity guard that
         protects resolution protects retrieval for the same reason.
         """
-        words = [w for w in re.findall(r"[\w.@'-]+", question.lower()) if len(w) > 1]
+        raw_words = [w for w in re.findall(r"[\w.@'-]+", question) if len(w) > 1]
+        words = [w.lower() for w in raw_words]
         seen: dict[str, Person] = {}
         for size in (3, 2, 1):
             for i in range(len(words) - size + 1):
                 phrase = " ".join(words[i : i + size])
-                if not _identifier_shaped(phrase):
+                raw_phrase = " ".join(raw_words[i : i + size])
+                identifier_shaped = _identifier_shaped(phrase)
+                capitalized_single = (
+                    size == 1 and not identifier_shaped and raw_phrase[:1].isupper()
+                )
+                if not identifier_shaped and not capitalized_single:
                     continue
                 if _role_alias(phrase):
                     continue
+                lookup_phrase = phrase[1:] if size == 1 and phrase.startswith("@") else phrase
                 rows = self.lookup.execute(
                     "SELECT DISTINCT eid, node_id, canonical_name, confidence, alias_count"
                     " FROM alias WHERE surface = ? LIMIT 2",
-                    (phrase,),
+                    (lookup_phrase,),
                 ).fetchall()
                 if len(rows) != 1:
                     continue
                 r = rows[0]
-                # A person with one surface form has nothing to expand to.
-                if int(r["alias_count"]) < 2 or r["eid"] in seen:
+                if r["eid"] in seen:
                     continue
+                if capitalized_single:
+                    given_name_evidence = self.lookup.execute(
+                        "SELECT count(DISTINCT surface) FROM alias "
+                        "WHERE kind = 'name' AND surface GLOB ?",
+                        (f"{lookup_phrase} *",),
+                    ).fetchone()[0]
+                    if given_name_evidence < 3:
+                        continue
                 mailboxes = self.lookup.execute(
                     "SELECT surface FROM alias WHERE eid = ? AND kind = 'email'", (r["eid"],)
                 ).fetchall()
                 # Role aliases can have an address too. The resolver learned
                 # functional mailbox localparts from the corpus, so reject the
                 # entire entity rather than expanding its display-name alias.
-                if not mailboxes or any(
+                if any(
                     self.priors.is_functional(mailbox["surface"].partition("@")[0])
                     for mailbox in mailboxes
                 ):
@@ -269,7 +307,7 @@ class Asker:
                     node=int(r["node_id"]),
                     confidence=float(r["confidence"]),
                     alias_count=int(r["alias_count"]),
-                    surfaces={phrase},
+                    surfaces={lookup_phrase},
                 )
         return list(seen.values())
 
@@ -311,63 +349,95 @@ class Asker:
             for r in rows
         ]
 
-    def connect(self, question: str, people: list[Person], docs: list[Candidate]) -> list[dict]:
-        """Write what this question touched into HydraDB, then ask it what connects.
+    def retrieve(self, question: str, limit: int = 20) -> RetrievalResult:
+        """Retrieve independently by lexical, identity, and graph-scoped paths."""
+        named = self.read_identities(question)
+        expansion: list[str] = []
+        asked_as: list[str] = []
+        for person in named:
+            expansion.extend(self.surfaces_of(person))
+            asked_as.extend(person.surfaces)
 
-        The write is the point as much as the read: after this call the graph
-        holds these documents, these people and the links between them, so the
-        next question about any of them traverses an ontology that has already
-        grown.
-        """
-        doc_rows = [
-            {
-                "id": node_id(f"doc:{d.doc_id}"),
-                "doc_id": d.doc_id,
-                "source": d.source,
-                "title": (d.title or d.doc_id)[:400],
-                "date": d.date or "",
-            }
-            for d in docs
-        ]
-        self.engine.upsert_nodes("Document", doc_rows, ["doc_id", "source", "title", "date"])
-
-        by_doc = {d.doc_id: d for d in docs}
-        edges = []
-        for person in people:
-            for d in docs:
-                if document_mentions(person, d):
-                    edges.append(
-                        {
-                            "src": person.node,
-                            "dst": node_id(f"doc:{d.doc_id}"),
-                            "count": person.mentions,
-                        }
-                    )
-        # MERGE, not CREATE: the same question asked twice must not double
-        # the graph it grew the first time.
-        self.engine.merge_edges(
-            "MENTIONED_IN", edges, ["count"], src_label="Entity", dst_label="Document"
+        plain_docs = self.recall.search(question, limit=limit)
+        identity_docs = (
+            self.recall.search(question, limit=limit, also=expansion, drop=asked_as)
+            if expansion
+            else plain_docs
+        )
+        graph_candidates: list[GraphCandidate] = []
+        graph_error = None
+        if named:
+            try:
+                graph_candidates = self.engine.documents_for_entities(
+                    [(person.eid, person.node) for person in named[:GRAPH_SEED_LIMIT]],
+                    GRAPH_SCOPE_LIMIT,
+                )
+            except Exception as exc:
+                graph_error = f"{type(exc).__name__}: {str(exc)[:160]}"
+        graph_docs = self.recall.search_scoped(
+            question, [candidate.doc_id for candidate in graph_candidates], limit=limit, drop=asked_as
+        )
+        final_docs = list(identity_docs)
+        known = {doc.doc_id for doc in final_docs}
+        final_docs.extend(doc for doc in graph_docs if doc.doc_id not in known)
+        return RetrievalResult(
+            plain_docs=plain_docs,
+            identity_docs=identity_docs,
+            graph_docs=graph_docs,
+            final_docs=final_docs,
+            named_entities=named,
+            graph_candidates=graph_candidates,
+            graph_error=graph_error,
         )
 
-        # Now the graph question: which of these people are connected, and
-        # through what? Bounded multi-hop, returned whole with properties.
+    @staticmethod
+    def _answer_documents(retrieval: RetrievalResult, limit: int) -> list[Candidate]:
+        """Balance both ranked strategies in the bounded synthesis context."""
+        documents: list[Candidate] = []
+        seen: set[str] = set()
+        for rank in range(max(len(retrieval.identity_docs), len(retrieval.graph_docs))):
+            for strategy in (retrieval.identity_docs, retrieval.graph_docs):
+                if rank >= len(strategy) or strategy[rank].doc_id in seen:
+                    continue
+                documents.append(strategy[rank])
+                seen.add(strategy[rank].doc_id)
+                if len(documents) >= limit:
+                    return documents
+        return documents
+
+    def connect(self, question: str, people: list[Person], docs: list[Candidate]) -> list[dict]:
+        """Render verified pairwise paths between entities named in the query.
+
+        These paths explain existing co-occurrence only. They never expand the
+        retrieval scope and this method performs no writes.
+        """
         found: list[dict] = []
-        for i, a in enumerate(people[:4]):
-            for b in people[i + 1 : 5]:
-                for path in self.engine.paths(a.node, b.node, ["MENTIONED_IN"], max_len=2, path_count=2):
-                    hops = path.get("path") or {}
-                    docs_on_path = [
-                        n["properties"].get("title")
-                        for n in hops.get("nodes", [])
-                        if isinstance(n, dict) and "title" in (n.get("properties") or {})
+        for i, left in enumerate(people[:4]):
+            for right in people[i + 1 : 5]:
+                results = self.engine.paths(
+                    left.node,
+                    right.node,
+                    ["MENTIONED_IN"],
+                    max_len=2,
+                    path_count=2,
+                )
+                for result in results:
+                    path = result.get("path") or {}
+                    documents = [
+                        node["properties"].get("title")
+                        for node in path.get("nodes", [])
+                        if isinstance(node, dict)
+                        and "title" in (node.get("properties") or {})
                     ]
-                    if docs_on_path:
+                    if documents:
                         found.append(
                             {
-                                "a": a.name,
-                                "b": b.name,
-                                "via": docs_on_path,
-                                "summary": f"{a.name} ─ {docs_on_path[0][:52]} ─ {b.name}",
+                                "a": left.name,
+                                "b": right.name,
+                                "via": documents,
+                                "summary": (
+                                    f"{left.name} - {documents[0][:52]} - {right.name}"
+                                ),
                             }
                         )
         return found
@@ -385,18 +455,10 @@ class Asker:
         t0 = time.time()
         yield {"type": "start", "question": question}
 
-        # Before searching, ask the ontology who this question is about, and
-        # search for every name they answer to. This is the step keyword search
-        # cannot perform: the question says "Sam", the document says
-        # "S. Ratnaparkhi", and only the graph knows they are one person.
-        named = self.read_identities(question)
-        expansion: list[str] = []
-        asked_as: list[str] = []
-        for person in named:
+        retrieval = self.retrieve(question, limit)
+        for person in retrieval.named_entities:
             surfaces = self.surfaces_of(person)
             others = [s for s in surfaces if s not in person.surfaces]
-            expansion.extend(surfaces)
-            asked_as.extend(person.surfaces)
             yield {
                 "type": "expanded",
                 "asked_as": sorted(person.surfaces)[0],
@@ -404,18 +466,52 @@ class Asker:
                 "also_known_as": sorted(others)[:8],
             }
 
-        plain = self.recall.search(question, limit=limit)
-        docs = (
-            self.recall.search(question, limit=limit, also=expansion, drop=asked_as)
-            if expansion else plain
-        )
-        found_only_by_identity = len({d.doc_id for d in docs} - {d.doc_id for d in plain})
+        docs = self._answer_documents(retrieval, limit)
         yield {
             "type": "recall",
             "documents": len(docs),
             "terms": self.recall.selective_terms(question),
-            "identity_only": found_only_by_identity,
+            "identity_only": len(
+                {doc.doc_id for doc in retrieval.identity_docs}
+                - {doc.doc_id for doc in retrieval.plain_docs}
+            ),
             "ms": round((time.time() - t0) * 1000),
+        }
+        yield {
+            "type": "graph_scope",
+            "entities": [person.eid for person in retrieval.named_entities],
+            "candidates": len(retrieval.graph_candidates),
+            "available": retrieval.graph_error is None,
+        }
+        if retrieval.graph_error:
+            yield {
+                "type": "degraded",
+                "step": "graph_retrieval",
+                "detail": retrieval.graph_error,
+            }
+        identity_ids = {doc.doc_id for doc in retrieval.identity_docs}
+        candidates_by_doc = {candidate.doc_id: candidate for candidate in retrieval.graph_candidates}
+        for doc in retrieval.graph_docs:
+            if doc.doc_id in identity_ids:
+                continue
+            candidate = candidates_by_doc.get(doc.doc_id)
+            yield {
+                "type": "graph_document",
+                "doc_id": doc.doc_id,
+                "seed_eids": list(candidate.seed_eids) if candidate else [],
+                "hops": candidate.hops if candidate else 0,
+                "reason": candidate.reason if candidate else "",
+                "path": candidate.path if candidate else {},
+            }
+        yield {
+            "type": "graph_ablation",
+            "plain": len(retrieval.plain_docs),
+            "identity": len(retrieval.identity_docs),
+            "graph": len(retrieval.graph_docs),
+            "graph_only": len(
+                {doc.doc_id for doc in retrieval.graph_docs} - identity_ids
+            ),
+            "available": retrieval.graph_error is None,
         }
         if not docs:
             yield {
@@ -487,12 +583,10 @@ class Asker:
                         "to": f"doc:{d.doc_id}",
                     }
 
-        # Traversal runs before answer composition so that graph paths can
-        # change what the model writes.  The engine write-then-read takes
-        # single-digit milliseconds against a local container, so the
-        # reordering adds no perceptible latency.
+        # Pairwise paths explain named entities after retrieval; they do not
+        # add collaborators or documents to the candidate scope.
         try:
-            paths = self.connect(question, people, docs)
+            paths = self.connect(question, retrieval.named_entities, docs)
         except Exception as exc:
             paths = []
             yield {
@@ -555,8 +649,65 @@ class Asker:
         t0 = time.time()
         events: list[Event] = []
 
-        docs = self.recall.search(question, limit=limit)
-        events.append(Event("recall", {"documents": len(docs), "terms": len(self.recall.selective_terms(question))}))
+        retrieval = self.retrieve(question, limit)
+        docs = self._answer_documents(retrieval, limit)
+        events.append(
+            Event(
+                "recall",
+                {
+                    "documents": len(docs),
+                    "terms": len(self.recall.selective_terms(question)),
+                },
+            )
+        )
+        events.append(
+            Event(
+                "graph_scope",
+                {
+                    "entities": len(retrieval.named_entities),
+                    "candidates": len(retrieval.graph_candidates),
+                    "available": retrieval.graph_error is None,
+                },
+            )
+        )
+        if retrieval.graph_error:
+            events.append(
+                Event(
+                    "graph_degraded",
+                    {"detail": retrieval.graph_error},
+                )
+            )
+        identity_ids = {doc.doc_id for doc in retrieval.identity_docs}
+        candidates_by_doc = {candidate.doc_id: candidate for candidate in retrieval.graph_candidates}
+        for doc in retrieval.graph_docs:
+            candidate = candidates_by_doc.get(doc.doc_id)
+            if candidate is not None and doc.doc_id not in identity_ids:
+                events.append(
+                    Event(
+                        "graph_document",
+                        {
+                            "doc_id": candidate.doc_id,
+                            "seed_eids": candidate.seed_eids,
+                            "hops": candidate.hops,
+                            "reason": candidate.reason,
+                            "path": candidate.path,
+                        },
+                    )
+                )
+        events.append(
+            Event(
+                "graph_ablation",
+                {
+                    "plain": len(retrieval.plain_docs),
+                    "identity": len(retrieval.identity_docs),
+                    "graph": len(retrieval.graph_docs),
+                    "graph_only": len(
+                        {doc.doc_id for doc in retrieval.graph_docs} - identity_ids
+                    ),
+                    "available": retrieval.graph_error is None,
+                },
+            )
+        )
         if not docs:
             return Answer(
                 question, [], [], [], events,
@@ -578,7 +729,15 @@ class Asker:
             )
         )
 
-        paths = self.connect(question, people, docs) if people else []
+        try:
+            paths = (
+                self.connect(question, retrieval.named_entities, docs)
+                if len(retrieval.named_entities) > 1
+                else []
+            )
+        except Exception as exc:
+            paths = []
+            events.append(Event("paths_degraded", {"detail": type(exc).__name__}))
         events.append(Event("paths_walked", {"connections": len(paths)}))
 
         abstained = None
@@ -588,6 +747,19 @@ class Asker:
             # know who it concerns.
             abstained = "matching documents exist, but no known person resolves within them"
 
+        text = ""
+        cited: list[int] = []
+        if not abstained:
+            try:
+                written = answer.write(question, docs, people, paths=paths)
+                text = written.text
+                cited = written.cited
+                if written.abstained:
+                    abstained = written.text or "the retrieved documents do not contain the answer"
+            except Exception as exc:
+                events.append(Event("answer_degraded", {"detail": type(exc).__name__}))
+                abstained = f"answer synthesis failed ({type(exc).__name__})"
+
         return Answer(
             question=question,
             people=people,
@@ -596,4 +768,6 @@ class Asker:
             events=events,
             abstained=abstained,
             elapsed=time.time() - t0,
+            text=text,
+            cited=cited,
         )

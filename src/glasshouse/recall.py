@@ -22,6 +22,7 @@ import json
 import re
 import sqlite3
 from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
 from typing import Iterator, Sequence
 
@@ -43,6 +44,11 @@ MAX_DF_FRACTION = 0.05
 # When every term in a question is common, keep this many of the rarest rather
 # than searching for nothing.
 MIN_TERMS = 4
+MAX_SCOPE_TERMS = 6
+
+_QUESTION_TERM = frozenset(
+    "a an about are decide decided did do does how is me of please say said tell the was were what when where which who why".split()
+)
 
 
 @dataclass(slots=True)
@@ -200,7 +206,7 @@ class LocalRecall:
         # over whatever is left, so removing the person's name afterwards threw
         # away the good terms and kept the filler: "what did Jonas Weber say
         # about capacity" ended up searching for `say` and `did`.
-        muted = {w for phrase in mute for w in phrase.split()}
+        muted = {word for phrase in mute for word in query_terms(phrase)}
         ceiling = (self.count() or 1) * MAX_DF_FRACTION
         scored = [
             (t, self.document_frequency(t))
@@ -213,6 +219,22 @@ class LocalRecall:
             # Every term is common. Take the rarest few rather than nothing.
             keep = [t for t, _ in sorted(present, key=lambda x: x[1])[:MIN_TERMS]]
         return keep
+
+    def topic_terms(self, question: str, mute: Sequence[str] = ()) -> list[str]:
+        """Content terms for ranking an already-bounded candidate scope.
+
+        Global document frequency is intentionally not a cutoff here. A common
+        enterprise word such as `policy` is weak across 500k documents but very
+        useful when ranking only a person's direct graph neighbors.
+        """
+        muted = {word for phrase in mute for word in query_terms(phrase)}
+        return [
+            term
+            for term in query_terms(question)
+            if term not in muted
+            and term not in _QUESTION_TERM
+            and self.document_frequency(term) > 0
+        ]
 
     def search(
         self,
@@ -295,6 +317,78 @@ class LocalRecall:
             date=row["date"] or "",
             score=0.0,
         )
+
+    def get_many(self, doc_ids: Sequence[str]) -> list[Candidate]:
+        """Fetch known document ids without changing the caller's requested order."""
+        if not doc_ids:
+            return []
+        unique_ids = list(dict.fromkeys(doc_ids))
+        placeholders = ", ".join("?" for _ in unique_ids)
+        rows = self.conn.execute(
+            "SELECT doc_id, source, title, body, date FROM docs WHERE doc_id IN (" + placeholders + ")",
+            unique_ids,
+        ).fetchall()
+        found = {
+            row["doc_id"]: Candidate(
+                doc_id=row["doc_id"], source=row["source"], title=row["title"] or "",
+                body=row["body"] or "", date=row["date"] or "", score=0.0,
+            )
+            for row in rows
+        }
+        return [found[doc_id] for doc_id in doc_ids if doc_id in found]
+
+    def search_scoped(
+        self, question: str, doc_ids: Sequence[str], limit: int = 20, drop: Sequence[str] = ()
+    ) -> list[Candidate]:
+        """Topic-rank a bounded graph-derived document scope with SQLite FTS5.
+
+        Documents matching more distinct topic terms are selected first. This
+        avoids a short document containing only a generic query verb outranking
+        a document that contains the actual multi-word topic.
+        """
+        ids = list(dict.fromkeys(doc_ids))
+        if not ids or limit <= 0:
+            return []
+        terms = self.topic_terms(question, mute=drop)
+        if not terms:
+            return []
+        terms = sorted(terms, key=self.document_frequency)[:MAX_SCOPE_TERMS]
+        self.conn.execute("CREATE TEMP TABLE IF NOT EXISTS graph_scope (doc_id TEXT PRIMARY KEY)")
+        self.conn.execute("DELETE FROM graph_scope")
+        self.conn.executemany("INSERT INTO graph_scope (doc_id) VALUES (?)", ((doc_id,) for doc_id in ids))
+        found: list[Candidate] = []
+        seen: set[str] = set()
+        for coverage in range(len(terms), 0, -1):
+            clauses = [
+                " AND ".join(f'"{term}"' for term in group)
+                for group in combinations(terms, coverage)
+            ]
+            match = " OR ".join(f"({clause})" for clause in clauses)
+            rows = self.conn.execute(
+                "SELECT docs.doc_id, docs.source, docs.title, docs.body, docs.date, "
+                "bm25(docs, 0.0, 0.0, 4.0, 1.0) AS rank "
+                "FROM docs JOIN graph_scope ON docs.doc_id = graph_scope.doc_id "
+                "WHERE docs MATCH ? ORDER BY rank LIMIT ?",
+                # Higher-coverage documents reappear in every lower tier. Fetch
+                # a full page so those duplicates do not consume the remaining
+                # allowance before new fallback documents are seen.
+                (match, limit),
+            )
+            for row in rows:
+                if row["doc_id"] in seen:
+                    continue
+                seen.add(row["doc_id"])
+                found.append(
+                    Candidate(
+                        row["doc_id"], row["source"], row["title"] or "",
+                        row["body"] or "", row["date"] or "", -float(row["rank"]),
+                    )
+                )
+                if len(found) >= limit:
+                    break
+            if len(found) >= limit:
+                break
+        return found
 
 
 def iter_normalized(sources: Sequence[str]) -> Iterator[tuple]:

@@ -123,3 +123,90 @@ def test_graph_prompt_labels_shared_documents_as_cooccurrence_only():
     assert "co-occurrences" in prompt
     assert "do\n   not prove collaboration" in answer.SYSTEM.lower()
     assert "ownership" in answer.SYSTEM.lower()
+
+
+def test_read_identities_requires_demonstrated_multi_surface_personhood(tmp_path):
+    """The corpus promotes every noticed string to an entity.
+
+    166,429 of them exist and only 38,853 carry both a second surface form and
+    a personal name. A channel tag, an HTTP status line and a vendor's shared
+    mailbox are all "entities" in that table; none of them are people, and
+    seeding graph retrieval with one drags in hundreds of unrelated documents.
+    An identity is credible here only when the resolver actually collapsed
+    separate surfaces onto it and one of those surfaces is a name.
+    """
+    asker = make_asker(
+        tmp_path,
+        [
+            # A real person: several surfaces, one of them a name.
+            ("irene choi", "name", "irene", 1, "Irene Choi", 1.0, 3),
+            ("ichoi", "handle", "irene", 1, "Irene Choi", 1.0, 3),
+            ("irene.choi@redwood.ai", "email", "irene", 1, "Irene Choi", 1.0, 3),
+            # A Slack channel mention, seen once and never resolved.
+            ("sre", "handle", "sre", 2, "sre", 1.0, 1),
+            ("finance", "handle", "finance", 3, "finance", 1.0, 1),
+            # An HTTP status line the parser read as a display name.
+            ("too many requests", "name", "429", 4, "Too Many Requests", 1.0, 1),
+            # A vendor with a shared mailbox and no personal name anywhere.
+            ("redwood", "handle", "redwood", 5, "Redwood", 1.0, 2),
+            ("redwood@redwood.ai", "email", "redwood", 5, "Redwood", 1.0, 2),
+        ],
+    )
+
+    assert [p.eid for p in asker.read_identities("Ask Irene Choi")] == ["irene"]
+    assert asker.read_identities("What did @sre track?") == []
+    assert asker.read_identities("What did @finance decide?") == []
+    assert asker.read_identities("Why Too Many Requests?") == []
+    assert asker.read_identities("What does Redwood recommend?") == []
+
+
+def test_read_identities_rejects_organizations_and_concepts(tmp_path):
+    """Multi-surface evidence alone still admits companies and jargon.
+
+    An organization owns the domain it is named after, so its name tokens turn
+    up in the email host; a shared mailbox is named after the function rather
+    than a person; and a concept is one phrase punctuated two ways rather than
+    two independently observed surfaces. A person's domain has nothing to do
+    with their name.
+    """
+    asker = make_asker(
+        tmp_path,
+        [
+            # Real person: the domain says nothing about the name.
+            ("priya nair", "name", "nair", 1, "Priya Nair", 1.0, 2),
+            ("priya.nair@heliumhealth.com", "email", "nair", 1, "Priya Nair", 1.0, 2),
+            # The company that owns the domain it is named for.
+            ("acme health", "name", "acme", 2, "Acme Health", 1.0, 2),
+            ("support@acmehealth.com", "email", "acme", 2, "Acme Health", 1.0, 2),
+            ("horizon analytics", "name", "horizon", 3, "Horizon Analytics", 1.0, 2),
+            ("analytics@horizonfinance.com", "email", "horizon", 3, "Horizon Analytics", 1.0, 2),
+            # One phrase punctuated two ways is not two surfaces.
+            ("routing policy", "name", "routing", 5, "Routing Policy", 1.0, 2),
+            ("routing_policy", "handle", "routing", 5, "Routing Policy", 1.0, 2),
+        ],
+    )
+
+    assert [p.eid for p in asker.read_identities("Ask Priya Nair")] == ["nair"]
+    assert asker.read_identities("What does Acme Health require?") == []
+    assert asker.read_identities("What did Horizon Analytics report?") == []
+    assert asker.read_identities("What changed in Routing Policy?") == []
+
+
+def test_read_identities_rejects_metric_shaped_handles(tmp_path):
+    """`p95` is a latency percentile, and the resolver merged it into a person.
+
+    Handles carrying a digit are identifier-shaped, so percentile and status
+    tokens sail through and drag a whole entity in behind them. One real
+    entity in this corpus answers to `p95`, `p50`, `p99` and `95p` at once.
+    """
+    asker = make_asker(
+        tmp_path,
+        [
+            ("p95", "handle", "nair", 1, "P Nair", 1.0, 3),
+            ("priya nair", "name", "nair", 1, "P Nair", 1.0, 3),
+            ("priya.nair@heliumhealth.com", "email", "nair", 1, "P Nair", 1.0, 3),
+        ],
+    )
+    assert asker.read_identities("What is the p95 latency?") == []
+    assert asker.read_identities("What did 429 mean?") == []
+    assert [p.eid for p in asker.read_identities("Ask Priya Nair")] == ["nair"]

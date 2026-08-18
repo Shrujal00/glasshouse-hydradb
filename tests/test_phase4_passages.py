@@ -52,3 +52,21 @@ def test_build_prompt_shows_the_matching_passage_of_a_long_document():
         "what percent of burst credits are reserved?", [document(body)], []
     )
     assert "previous internal suggestion" in prompt
+
+
+def test_match_count_reports_the_whole_corpus_not_the_page(tmp_path):
+    """The trace said "searched the corpus  20 docs", which reads as a scan of
+    twenty documents. FTS5 matches the entire index and twenty is only what
+    survives the ranking -- a real question here matches 134,466 of 511,962.
+    """
+    from glasshouse.recall import LocalRecall
+
+    recall = LocalRecall(tmp_path / "recall.sqlite3")
+    recall.create()
+    recall.add([
+        (f"d{i}", "slack", "Keycard audit", "keycard access log retention", "", "", "")
+        for i in range(30)
+    ])
+    assert recall.match_count("what does the keycard audit require?") == 30
+    assert len(recall.search("what does the keycard audit require?", limit=5)) == 5
+    assert recall.match_count("vocabulary absent from every document") == 0

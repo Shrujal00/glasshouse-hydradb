@@ -462,7 +462,11 @@ function drain(){
 function render(ev){
     switch (ev.type){
       case 'recall':
-        step('searched the corpus', ev.documents + ' docs', ev.ms);
+        // `documents` is the page kept, not the field searched. Showing the
+        // page alone read as "only twenty documents were looked at".
+        step('ranked the corpus',
+             (ev.matched != null ? ev.matched.toLocaleString() + ' matched → ' : '') +
+             'kept ' + ev.documents, ev.ms);
         if (ev.terms?.length)
           step('kept only rare terms', ev.terms.slice(0,4).join(' '));
         break;

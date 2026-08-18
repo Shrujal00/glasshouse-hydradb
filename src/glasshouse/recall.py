@@ -320,6 +320,25 @@ class LocalRecall:
             for r in self.conn.execute(sql, params)
         ]
 
+    def match_count(self, question: str) -> int:
+        """How many documents the question matches before ranking trims them.
+
+        `search` returns a page; this is the size of the field it was chosen
+        from. Reporting the page as though it were the search made the trace
+        read as if twenty documents had been looked at, when the real number
+        for an ordinary question is six figures. FTS5 keeps this count, so
+        asking for it costs nothing.
+        """
+        terms = self.selective_terms(question)
+        if not terms:
+            return 0
+        match = " OR ".join(f'"{t}"' for t in terms)
+        return int(
+            self.conn.execute(
+                "SELECT count(*) FROM docs WHERE docs MATCH ?", (match,)
+            ).fetchone()[0]
+        )
+
     def get(self, doc_id: str) -> Candidate | None:
         row = self.conn.execute(
             "SELECT doc_id, source, title, body, date FROM docs WHERE doc_id = ?", (doc_id,)

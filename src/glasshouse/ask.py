@@ -567,6 +567,7 @@ class Asker:
         yield {
             "type": "recall",
             "documents": len(docs),
+            "matched": self.recall.match_count(question),
             "terms": self.recall.selective_terms(question),
             "identity_only": len(
                 {doc.doc_id for doc in retrieval.identity_docs}

@@ -46,6 +46,10 @@ def run(sources: list[str]) -> None:
     recall.conn.commit()
     print(f"  indexed {total:,} in {time.time()-t0:.1f}s, optimizing ...", flush=True)
     recall.optimize()
+    # Without this, fetching documents by id falls back to scanning the whole
+    # FTS table: 21 seconds for the handful the graph selected.
+    print(f"mapping ids to rowids ...", flush=True)
+    recall.build_docmap()
 
     size = recall.path.stat().st_size / 1e9
     print(f"\nindex: {recall.count():,} documents, {size:.2f} GB at {recall.path}")

@@ -19,11 +19,11 @@ alludes to, so a title hit is worth more than a body hit.
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
 import threading
 from dataclasses import dataclass
-from itertools import combinations
 from pathlib import Path
 from typing import Iterator, Sequence
 
@@ -339,12 +339,52 @@ class LocalRecall:
             ).fetchone()[0]
         )
 
-    def get(self, doc_id: str) -> Candidate | None:
-        row = self.conn.execute(
-            "SELECT doc_id, source, title, body, date FROM docs WHERE doc_id = ?", (doc_id,)
-        ).fetchone()
-        if row is None:
-            return None
+    def build_docmap(self) -> int:
+        """Map every `doc_id` to its rowid, so fetches stop scanning.
+
+        `docs` is an FTS5 virtual table and `doc_id` is UNINDEXED, which means
+        `WHERE doc_id IN (...)` has no index to use and SQLite reads all
+        511,962 rows -- 21 seconds to fetch the 55 documents the graph had
+        just selected, which is the whole cost of a graph-scoped question.
+        FTS5 does answer rowid lookups directly, so one ordinary table from
+        doc_id to rowid restores that. Rebuilding is idempotent and only
+        needs doing after the index changes.
+        """
+        conn = self.conn
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS docmap (doc_id TEXT PRIMARY KEY, rid INTEGER)"
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO docmap (doc_id, rid) SELECT doc_id, rowid FROM docs"
+        )
+        conn.commit()
+        return int(conn.execute("SELECT count(*) FROM docmap").fetchone()[0])
+
+    def _rowids(self, doc_ids: Sequence[str]) -> dict[str, int]:
+        """Rowids for the ids we know, silently skipping the ones we do not."""
+        try:
+            placeholders = ", ".join("?" for _ in doc_ids)
+            rows = self.conn.execute(
+                f"SELECT doc_id, rid FROM docmap WHERE doc_id IN ({placeholders})",
+                list(doc_ids),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return {}  # map not built yet; callers fall back to a scan
+        return {row["doc_id"]: int(row["rid"]) for row in rows}
+
+    def _rows_by_rowid(self, rowids: Sequence[int]) -> dict[int, sqlite3.Row]:
+        if not rowids:
+            return {}
+        placeholders = ", ".join("?" for _ in rowids)
+        rows = self.conn.execute(
+            "SELECT rowid AS rid, doc_id, source, title, body, date FROM docs "
+            f"WHERE rowid IN ({placeholders})",
+            list(rowids),
+        ).fetchall()
+        return {int(row["rid"]): row for row in rows}
+
+    @staticmethod
+    def _candidate(row: sqlite3.Row) -> Candidate:
         return Candidate(
             doc_id=row["doc_id"],
             source=row["source"],
@@ -354,33 +394,56 @@ class LocalRecall:
             score=0.0,
         )
 
+    def get(self, doc_id: str) -> Candidate | None:
+        found = self.get_many([doc_id])
+        return found[0] if found else None
+
     def get_many(self, doc_ids: Sequence[str]) -> list[Candidate]:
         """Fetch known document ids without changing the caller's requested order."""
         if not doc_ids:
             return []
         unique_ids = list(dict.fromkeys(doc_ids))
-        placeholders = ", ".join("?" for _ in unique_ids)
-        rows = self.conn.execute(
-            "SELECT doc_id, source, title, body, date FROM docs WHERE doc_id IN (" + placeholders + ")",
-            unique_ids,
-        ).fetchall()
-        found = {
-            row["doc_id"]: Candidate(
-                doc_id=row["doc_id"], source=row["source"], title=row["title"] or "",
-                body=row["body"] or "", date=row["date"] or "", score=0.0,
-            )
-            for row in rows
-        }
+        rowids = self._rowids(unique_ids)
+        if rowids:
+            by_rowid = self._rows_by_rowid(list(rowids.values()))
+            found = {
+                doc_id: self._candidate(by_rowid[rid])
+                for doc_id, rid in rowids.items()
+                if rid in by_rowid
+            }
+        else:
+            placeholders = ", ".join("?" for _ in unique_ids)
+            rows = self.conn.execute(
+                "SELECT doc_id, source, title, body, date FROM docs "
+                f"WHERE doc_id IN ({placeholders})",
+                unique_ids,
+            ).fetchall()
+            found = {row["doc_id"]: self._candidate(row) for row in rows}
         return [found[doc_id] for doc_id in doc_ids if doc_id in found]
 
     def search_scoped(
         self, question: str, doc_ids: Sequence[str], limit: int = 20, drop: Sequence[str] = ()
     ) -> list[Candidate]:
-        """Topic-rank a bounded graph-derived document scope with SQLite FTS5.
+        """Topic-rank a bounded, already-chosen set of documents.
 
-        Documents matching more distinct topic terms are selected first. This
-        avoids a short document containing only a generic query verb outranking
-        a document that contains the actual multi-word topic.
+        The graph hands over a few hundred documents at most, and ranking them
+        is not a search problem. Two FTS-based attempts both cost about 25
+        seconds on a real question: SQLite evaluates `docs MATCH` against the
+        whole index before joining it to the scope, so restricting to 55
+        documents restricts nothing -- the union of six ordinary English terms
+        still matches a large fraction of half a million documents, and every
+        one of them gets ranked.
+
+        Fetching the scope by primary key and scoring it here is milliseconds,
+        because the work is proportional to the scope rather than the corpus.
+        This is only safe because the caller caps the scope; it is not a
+        general search path and must not be used as one.
+
+        Documents covering more distinct topic terms rank first, so a short
+        document carrying one generic query verb cannot outrank one carrying
+        the real multi-word topic. Rarer terms count for more, and the title
+        counts for more than the body -- in this corpus the subject line often
+        states what the body only gestures at.
         """
         ids = list(dict.fromkeys(doc_ids))
         if not ids or limit <= 0:
@@ -389,42 +452,31 @@ class LocalRecall:
         if not terms:
             return []
         terms = sorted(terms, key=self.document_frequency)[:MAX_SCOPE_TERMS]
-        self.conn.execute("CREATE TEMP TABLE IF NOT EXISTS graph_scope (doc_id TEXT PRIMARY KEY)")
-        self.conn.execute("DELETE FROM graph_scope")
-        self.conn.executemany("INSERT INTO graph_scope (doc_id) VALUES (?)", ((doc_id,) for doc_id in ids))
-        found: list[Candidate] = []
-        seen: set[str] = set()
-        for coverage in range(len(terms), 0, -1):
-            clauses = [
-                " AND ".join(f'"{term}"' for term in group)
-                for group in combinations(terms, coverage)
-            ]
-            match = " OR ".join(f"({clause})" for clause in clauses)
-            rows = self.conn.execute(
-                "SELECT docs.doc_id, docs.source, docs.title, docs.body, docs.date, "
-                "bm25(docs, 0.0, 0.0, 4.0, 1.0) AS rank "
-                "FROM docs JOIN graph_scope ON docs.doc_id = graph_scope.doc_id "
-                "WHERE docs MATCH ? ORDER BY rank LIMIT ?",
-                # Higher-coverage documents reappear in every lower tier. Fetch
-                # a full page so those duplicates do not consume the remaining
-                # allowance before new fallback documents are seen.
-                (match, limit),
+        weights = {
+            term: 1.0 / math.log(2 + self.document_frequency(term)) for term in terms
+        }
+
+        scored: list[tuple[int, float, int, Candidate]] = []
+        for position, document in enumerate(self.get_many(ids)):
+            title = (document.title or "").lower()
+            body = (document.body or "").lower()
+            coverage = 0
+            weight = 0.0
+            for term in terms:
+                in_title = title.count(term)
+                in_body = body.count(term)
+                if in_title or in_body:
+                    coverage += 1
+                    weight += weights[term] * (4.0 * in_title + min(in_body, 8))
+            if coverage:
+                scored.append((-coverage, -weight, position, document))
+        scored.sort(key=lambda item: item[:3])
+        return [
+            Candidate(
+                d.doc_id, d.source, d.title, d.body, d.date, round(-weight, 4)
             )
-            for row in rows:
-                if row["doc_id"] in seen:
-                    continue
-                seen.add(row["doc_id"])
-                found.append(
-                    Candidate(
-                        row["doc_id"], row["source"], row["title"] or "",
-                        row["body"] or "", row["date"] or "", -float(row["rank"]),
-                    )
-                )
-                if len(found) >= limit:
-                    break
-            if len(found) >= limit:
-                break
-        return found
+            for _, weight, _, d in scored[:limit]
+        ]
 
 
 def iter_normalized(sources: Sequence[str]) -> Iterator[tuple]:

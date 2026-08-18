@@ -22,6 +22,7 @@ answered from a document that uses a different one.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from typing import Iterable, Iterator
@@ -30,14 +31,32 @@ import ollama
 
 from .config import ADJUDICATION_MODEL, get
 
-# Enough of each document to carry the answer without burying it. The recall
-# layer already ranked them, so the useful part is near the top.
+# How much of each document reaches the model. The budget is spent on the
+# passages that match the question rather than on the opening characters:
+# corpus documents run to 5-7k characters and the sentence that answers the
+# question is routinely past the halfway mark, so taking the head silently
+# dropped the answer and left behind similar-looking numbers that did not
+# answer anything.
 DOC_CHARS = 2600
 MAX_DOCS = 6
+
+# The unit passages are scored and spent in. Wide enough that a matched term
+# arrives with the sentence it belongs to, narrow enough that several separate
+# regions of a long document fit inside one document's allowance.
+_PASSAGE_WINDOW = 520
 
 # The model is told to open with this exact token when the corpus comes up
 # short, so abstention is detectable in code rather than inferred from wording.
 NOT_FOUND = "NOT_IN_CORPUS"
+
+_STOPWORDS = frozenset(
+    "the and for are was were what which who whom whose when where why how "
+    "did does do done should would could will can may might must have has had "
+    "that this these those there their them they from with without into onto "
+    "about above after again against all any because been before being below "
+    "between both during each few more most other over same some such than "
+    "then they too under until very you your our its his her not but".split()
+)
 
 SYSTEM = """You answer questions about a company's internal documents.
 
@@ -71,6 +90,63 @@ def _client() -> ollama.Client:
     )
 
 
+def select_passages(body: str, question: str, budget: int = DOC_CHARS) -> str:
+    """The parts of `body` that mention the question's own terms.
+
+    Ranked retrieval decides which documents are worth reading; this decides
+    which part of one gets read. The document is scored in fixed windows and
+    the budget is spent on the best ones that do not overlap, so a dense
+    opening cannot swallow the allowance and hide a later passage -- which is
+    exactly how the answer to the burst-credit question went missing.
+
+    Rare terms count for more than common ones. A pool identifier that appears
+    twice locates the answer; the word "pool", appearing forty times, does not.
+    """
+    body = body.strip()
+    if len(body) <= budget:
+        return body
+
+    terms = {t for t in re.findall(r"[a-z0-9][a-z0-9._/-]{2,}", question.lower())}
+    terms -= _STOPWORDS
+    lowered = body.lower()
+    weights = {}
+    for term in terms:
+        seen = lowered.count(term)
+        if seen:
+            weights[term] = 1.0 / math.sqrt(seen)
+    if not weights:
+        return body[:budget].strip()
+
+    step = _PASSAGE_WINDOW // 2
+    scored: list[tuple[float, int]] = []
+    for begin in range(0, len(body), step):
+        chunk = lowered[begin : begin + _PASSAGE_WINDOW]
+        score = sum(weight for term, weight in weights.items() if term in chunk)
+        if score:
+            scored.append((score, begin))
+    if not scored:
+        return body[:budget].strip()
+
+    scored.sort(key=lambda pair: (-pair[0], pair[1]))
+    picked: list[tuple[int, int]] = []
+    spent = 0
+    for _, begin in scored:
+        end = min(len(body), begin + _PASSAGE_WINDOW)
+        if any(begin < other_end and other_begin < end for other_begin, other_end in picked):
+            continue
+        if spent + (end - begin) > budget:
+            continue
+        picked.append((begin, end))
+        spent += end - begin
+    if not picked:
+        return body[:budget].strip()
+
+    picked.sort()
+    parts = [body[begin:end].strip() for begin, end in picked]
+    joined = " … ".join(parts)
+    return "… " + joined if picked[0][0] > 0 else joined
+
+
 def build_prompt(
     question: str,
     docs: Iterable,
@@ -94,7 +170,7 @@ def build_prompt(
 
     lines.append("Documents:")
     for i, d in enumerate(list(docs)[:MAX_DOCS], start=1):
-        body = (d.text or "")[:DOC_CHARS].strip()
+        body = select_passages(d.text or "", question, budget=DOC_CHARS)
         lines.append(f"\n[{i}] {d.source} — {d.title or d.doc_id}"
                      + (f" ({d.date})" if d.date else ""))
         lines.append(body)

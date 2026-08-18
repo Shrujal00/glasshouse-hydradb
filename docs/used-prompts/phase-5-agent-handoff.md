@@ -69,23 +69,40 @@ pass. Retrieval is 0.25–0.96s; a full question is ~3s end to end.
    make HydraDB genuinely load-bearing, and the reverse traversal above is
    the machinery it would run on.
 
-## The baseline is stale
+## The measured baseline
 
 `scripts/grade.py` grades answers against the benchmark's `answer_facts`
 rubric with an LLM judge, per fact, stratified by category — the only
 measurement of answer quality that exists; `scripts/score.py` measures
-document recall only. Its one recorded run reported **35.5% fact recall,
-18.2% fully correct** on 44 questions.
+document recall only.
 
-**That run predates passage selection, the identity gate, the reverse
-traversal and the performance fix. Re-run it before quoting any number:**
+Re-run on 2026-08-18 **after** passage selection, the identity gate, the
+reverse traversal and the performance fix:
 
-```bash
-.venv/bin/python scripts/grade.py --limit 44
+```
+fact recall            75 / 211   35.5%
+fully correct answers    9 / 44    20.5%
+median latency          2.7s
+p95 latency             4.3s
 ```
 
-Per-category figures come from 4 questions each and two of them were wrong
-when spot-checked by hand. Treat them as directional only.
+The run before those four changes scored **75/211 (35.5%)** and 8/44 (18.2%)
+on the same 44 questions. **Today's work did not move measured answer
+quality.** It fixed a 21s hang, a crash, three misleading UI labels and a
+graph with no usable entrance — all real, none of them things the rubric
+measures. What would move it is unbuilt: authorship edges for `metadata`, and
+claim arbitration for `conflicting_info`.
+
+Per-category at n=4 is noise: `basic` moved 50%→31% and `miscellaneous`
+0%→40% between runs of the same questions. **Only two results held across
+both runs and are worth trusting: `info_not_found` 100%, `metadata` 0%.**
+
+Before drawing conclusions, run a larger sample — `--limit 220` gives 20 per
+category, roughly 30–40 minutes:
+
+```bash
+.venv/bin/python scripts/grade.py --limit 220
+```
 
 ## Performance notes worth keeping
 

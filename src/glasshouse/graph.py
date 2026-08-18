@@ -81,6 +81,21 @@ class GraphCandidate:
     reason: str
 
 
+@dataclass(slots=True)
+class EntityCandidate:
+    """A person connected to evidence, not proof that they own or decided it."""
+
+    eid: str
+    name: str
+    node: int
+    doc_ids: tuple[str, ...]
+    reason: str
+
+    @property
+    def documents(self) -> int:
+        return len(self.doc_ids)
+
+
 def _unwrap(cell: Any) -> Any:
     """Values arrive as {"type": ..., "value": ...}; paths nest the same shape."""
     if not isinstance(cell, dict) or "value" not in cell:
@@ -324,6 +339,64 @@ class GraphEngine:
             strong=True,
         )
         return [{"path": r.values.get("path"), "cost": r.values.get("pathCost")} for r in rows]
+
+    def entities_for_documents(
+        self, doc_ids: Sequence[str], limit: int = 200, documents: int = 8
+    ) -> list["EntityCandidate"]:
+        """Who the graph connects to these documents, most-corroborated first.
+
+        `documents_for_entities` is the wrong way round for the questions that
+        matter. "Who owns the audit-log shipper sidecar?" names no one -- the
+        person is the answer -- so seeding from the question yields nothing.
+        Retrieval already found the documents about the component; reading the
+        same `MENTIONED_IN` edge inwards turns them into the people attached to
+        that evidence.
+
+        Ranking is by how many of the retrieved documents each person is
+        connected to. Appearing across four of six documents about a component
+        is a materially different signal from appearing in one, and it is a
+        count over edges rather than over words, which is the part keyword
+        search cannot do. It remains co-occurrence: connected is not owner.
+        """
+        pages = [d for d in dict.fromkeys(doc_ids) if d][:documents]
+        if not pages or limit <= 0:
+            return []
+        found: dict[str, EntityCandidate] = {}
+        order: list[str] = []
+        for doc_id in pages:
+            rows = self.query(
+                f"CALL algo.SSpaths({{sourceNode: {node_id('doc:' + doc_id)}, "
+                f"relTypes: ['MENTIONED_IN'], relDirection: 'incoming', "
+                f"maxLen: 1, pathCount: {limit}}}) YIELD path RETURN path",
+                strong=True,
+            )
+            for row in rows:
+                path = row.values.get("path") or {}
+                for node in path.get("nodes", []):
+                    if not isinstance(node, dict):
+                        continue
+                    props = node.get("properties") or {}
+                    eid = str(props.get("eid") or "")
+                    # The Document end of every path carries no eid, which is
+                    # what keeps it out of the tally.
+                    if not eid:
+                        continue
+                    entity = found.get(eid)
+                    if entity is None:
+                        entity = found[eid] = EntityCandidate(
+                            eid=eid,
+                            name=str(props.get("canonical_name") or eid),
+                            node=int(node.get("id") or -1),
+                            doc_ids=(),
+                            reason="Entity-[:MENTIONED_IN]->Document, read inwards",
+                        )
+                        order.append(eid)
+                    if doc_id not in entity.doc_ids:
+                        entity.doc_ids = entity.doc_ids + (doc_id,)
+        return sorted(
+            (found[eid] for eid in order),
+            key=lambda e: (-e.documents, order.index(e.eid)),
+        )
 
     def documents_for_entities(
         self, seeds: Sequence[tuple[str, int]], limit: int = 200

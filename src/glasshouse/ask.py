@@ -36,7 +36,7 @@ from . import answer
 from .config import STATE
 from .corpus import parse_document_text
 from .priors import Priors
-from .graph import GraphCandidate, GraphEngine
+from .graph import EntityCandidate, GraphCandidate, GraphEngine
 from .recall import Candidate, LocalRecall
 
 LOOKUP = STATE / "ontology.sqlite3"
@@ -228,6 +228,8 @@ class RetrievalResult:
     named_entities: list[Person]
     graph_candidates: list[GraphCandidate]
     graph_error: str | None = None
+    connected_entities: list[EntityCandidate] = field(default_factory=list)
+    connected_error: str | None = None
 
 
 class Asker:
@@ -477,6 +479,24 @@ class Asker:
         final_docs = list(identity_docs)
         known = {doc.doc_id for doc in final_docs}
         final_docs.extend(doc for doc in graph_docs if doc.doc_id not in known)
+
+        # The other way into the graph. Seeding from people named in the
+        # question opens for 21 of 570 benchmark questions and never for "who
+        # owns X", where the person is the answer. Reading MENTIONED_IN inwards
+        # from the documents retrieval already found gives the people attached
+        # to that evidence, ranked by how much of it they are attached to.
+        connected: list[EntityCandidate] = []
+        connected_error = None
+        if final_docs:
+            try:
+                connected = self.engine.entities_for_documents(
+                    [doc.doc_id for doc in final_docs], GRAPH_SCOPE_LIMIT
+                )
+            except Exception as exc:
+                # Its own failure. The forward scope reports separately, so a
+                # reverse traversal that breaks does not claim the whole graph
+                # is unreachable.
+                connected_error = f"{type(exc).__name__}: {str(exc)[:160]}"
         return RetrievalResult(
             plain_docs=plain_docs,
             identity_docs=identity_docs,
@@ -485,6 +505,8 @@ class Asker:
             named_entities=named,
             graph_candidates=graph_candidates,
             graph_error=graph_error,
+            connected_entities=connected,
+            connected_error=connected_error,
         )
 
     @staticmethod
@@ -601,6 +623,21 @@ class Asker:
                 "reason": candidate.reason if candidate else "",
                 "path": candidate.path if candidate else {},
             }
+        corroborated = [e for e in retrieval.connected_entities if e.documents > 1]
+        for entity in (corroborated or retrieval.connected_entities[:5])[:8]:
+            yield {
+                "type": "connected_entity",
+                "eid": entity.eid,
+                "name": entity.name,
+                "documents": entity.documents,
+                "reason": entity.reason,
+            }
+        if retrieval.connected_error:
+            yield {
+                "type": "degraded",
+                "step": "reverse_traversal",
+                "detail": retrieval.connected_error,
+            }
         yield {
             "type": "graph_ablation",
             "plain": len(retrieval.plain_docs),
@@ -700,7 +737,8 @@ class Asker:
 
         def compose() -> None:
             try:
-                for part in answer.write_streaming(question, docs, people, paths=paths):
+                for part in answer.write_streaming(question, docs, people, paths=paths,
+                                                connected=retrieval.connected_entities):
                     written.put(part)
             except Exception as exc:
                 written.put({"error": f"{type(exc).__name__}: {exc}"})
@@ -849,7 +887,8 @@ class Asker:
         cited: list[int] = []
         if not abstained:
             try:
-                written = answer.write(question, docs, people, paths=paths)
+                written = answer.write(question, docs, people, paths=paths,
+                              connected=retrieval.connected_entities)
                 text = written.text
                 cited = written.cited
                 if written.abstained:

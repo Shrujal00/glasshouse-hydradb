@@ -152,6 +152,7 @@ def build_prompt(
     docs: Iterable,
     people: Iterable,
     paths: Iterable[dict] | None = None,
+    connected: Iterable | None = None,
 ) -> str:
     """Lay out the evidence, identities first, graph connections last.
 
@@ -174,6 +175,21 @@ def build_prompt(
         lines.append(f"\n[{i}] {d.source} — {d.title or d.doc_id}"
                      + (f" ({d.date})" if d.date else ""))
         lines.append(body)
+
+    everyone = list(connected or ())
+    # Someone appearing across several of the retrieved documents is a
+    # stronger signal than someone appearing in one. When nobody recurs the
+    # ranking says nothing, but the roster is still worth showing -- these are
+    # the people the graph attaches to this evidence at all.
+    reached = [c for c in everyone if getattr(c, "documents", 0) > 1] or everyone[:5]
+    if reached:
+        lines.append(
+            "\nPeople HydraDB connects to this evidence, by how many of the "
+            "documents above they appear in. This is co-occurrence: it shows "
+            "who is present, never who owns or decided anything."
+        )
+        for c in reached[:8]:
+            lines.append(f"  {c.name} — in {c.documents} of these documents")
 
     path_list = list(paths or ())
     if path_list:
@@ -212,7 +228,7 @@ def _finish(text: str) -> Written:
 
 
 def write(
-    question: str, docs, people, model: str | None = None,
+    question: str, docs, people, model: str | None = None, connected=None,
     paths: Iterable[dict] | None = None,
 ) -> Written:
     """Answer in one shot."""
@@ -220,7 +236,7 @@ def write(
         model=model or ADJUDICATION_MODEL,
         messages=[
             {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": build_prompt(question, docs, people, paths=paths)},
+            {"role": "user", "content": build_prompt(question, docs, people, paths=paths, connected=connected)},
         ],
         options={"temperature": 0},
     )
@@ -228,7 +244,7 @@ def write(
 
 
 def write_streaming(
-    question: str, docs, people, model: str | None = None,
+    question: str, docs, people, model: str | None = None, connected=None,
     paths: Iterable[dict] | None = None,
 ) -> Iterator[dict]:
     """Answer token by token, so the interface can show it being written.
@@ -244,7 +260,7 @@ def write_streaming(
         model=model or ADJUDICATION_MODEL,
         messages=[
             {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": build_prompt(question, docs, people, paths=paths)},
+            {"role": "user", "content": build_prompt(question, docs, people, paths=paths, connected=connected)},
         ],
         options={"temperature": 0},
         stream=True,

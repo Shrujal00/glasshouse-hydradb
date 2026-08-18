@@ -409,7 +409,7 @@ function reset(){
   nodes.clear(); links.length = 0; alpha = 0;
   for (const id of ['trace','who','ev','conn','ab','ab-docs']) $(id).innerHTML = '';
   for (const id of ['who-block','ev-block','conn-block','ab-block']) $(id).hidden = true;
-  delete $('ab-docs').dataset.titled;
+  delete $('ab-docs').dataset.titled; delete $('ab').dataset.connected;
   $('hint').style.display = 'none';
 }
 
@@ -549,6 +549,17 @@ function render(ev){
           `<div class="gdoc"><span class="hop">${ev.hops}-hop</span>` +
           `<span class="t" data-doc="${esc(ev.doc_id)}">` +
           `${esc(titles[ev.doc_id] || ev.doc_id)}</span></div>`);
+        break;
+      case 'connected_entity':
+        $('ab-block').hidden = false;
+        if (!$('ab').dataset.connected){
+          $('ab').dataset.connected = '1';
+          $('ab').insertAdjacentHTML('afterend',
+            '<div class="added" id="conn-head">hydradb: who this evidence connects to</div>');
+        }
+        $('conn-head').insertAdjacentHTML('afterend',
+          `<div class="gdoc"><span class="hop">${ev.documents} docs</span>` +
+          `<span class="t">${esc(ev.name)}</span></div>`);
         break;
       case 'graph_ablation': {
         $('ab-block').hidden = false;

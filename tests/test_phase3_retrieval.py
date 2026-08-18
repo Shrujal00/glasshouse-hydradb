@@ -11,6 +11,9 @@ from glasshouse.recall import Candidate, LocalRecall
 
 
 class GraphScope:
+    def entities_for_documents(self, doc_ids, limit, documents=8):
+        return []
+
     def documents_for_entities(self, seeds, limit):
         assert seeds == [("sam", 101)]
         assert limit > 1
@@ -146,7 +149,7 @@ def test_stream_and_non_streaming_emit_graph_provenance_and_use_final_docs(
     monkeypatch.setattr(asker, "identify", lambda docs: {})
     monkeypatch.setattr(asker, "resolve", lambda surfaces: named)
 
-    def write(question, docs, people, paths):
+    def write(question, docs, people, paths, connected=()):
         answer_number = next(i for i, doc in enumerate(docs, 1) if doc.doc_id == "answer")
         return Written(f"Thirty days [{answer_number}]", False, [answer_number])
 

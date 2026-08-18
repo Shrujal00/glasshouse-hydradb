@@ -323,6 +323,27 @@ def test_singleton_without_email_can_seed_graph_retrieval(tmp_path):
     assert asker.read_identities("What changed in Retention?") == []
 
 
+def _sspath(seed: int, document_node: int, doc_id: str) -> Row:
+    """One SSpaths result row as the engine returns it: whole path, properties inline."""
+    return Row(
+        {
+            "path": {
+                "nodes": [
+                    {"id": seed, "labels": ["Entity"], "properties": {"eid": "e"}},
+                    {
+                        "id": document_node,
+                        "labels": ["Document"],
+                        "properties": {"doc_id": doc_id},
+                    },
+                ],
+                "relationships": [
+                    {"edge_type": "MENTIONED_IN", "src": seed, "dst": document_node},
+                ],
+            }
+        }
+    )
+
+
 def test_direct_graph_scope_uses_supported_anchored_queries_and_merges_provenance():
     class RecordingEngine(GraphEngine):
         def __init__(self):
@@ -330,17 +351,21 @@ def test_direct_graph_scope_uses_supported_anchored_queries_and_merges_provenanc
 
         def query(self, cypher, parameters=None, **kwargs):
             self.calls.append((cypher, parameters, kwargs))
-            seed = parameters["id"]
-            rows = [Row({"seed_id": seed, "document_node": 50, "doc_id": "shared"})]
+            seed = 1 if "sourceNode: 1," in cypher else 2
+            rows = [_sspath(seed, 50, "shared")]
             if seed == 1:
-                rows.append(Row({"seed_id": seed, "document_node": 51, "doc_id": "first"}))
+                rows.append(_sspath(seed, 51, "first"))
             return rows
 
     engine = RecordingEngine()
     candidates = engine.documents_for_entities([("one", 1), ("two", 2)], limit=4)
     assert len(engine.calls) == 2
     assert all("UNWIND" not in query for query, _, _ in engine.calls)
-    assert [parameters for _, parameters, _ in engine.calls] == [{"id": 1}, {"id": 2}]
+    # A labeled MATCH expansion scans the whole MENTIONED_IN edge set on the
+    # loaded corpus and blows past the engine timeout; the native single-source
+    # path procedure reads the anchor's adjacency instead.
+    assert all("algo.SSpaths" in query for query, _, _ in engine.calls)
+    assert all("MATCH" not in query for query, _, _ in engine.calls)
     shared = next(candidate for candidate in candidates if candidate.doc_id == "shared")
     assert shared.seed_eids == ("one", "two")
     assert shared.hops == 1
@@ -357,19 +382,9 @@ def test_multi_seed_scope_refills_after_overlapping_neighbors():
             pass
 
         def query(self, cypher, parameters=None, **kwargs):
-            seed = parameters["id"]
-            return [
-                Row({"seed_id": seed, "document_node": i, "doc_id": f"shared-{i}"})
-                for i in range(2)
-            ] + [
-                Row(
-                    {
-                        "seed_id": seed,
-                        "document_node": seed * 10 + i,
-                        "doc_id": f"seed-{seed}-{i}",
-                    }
-                )
-                for i in range(2)
+            seed = 1 if "sourceNode: 1," in cypher else 2
+            return [_sspath(seed, i, f"shared-{i}") for i in range(2)] + [
+                _sspath(seed, seed * 10 + i, f"seed-{seed}-{i}") for i in range(2)
             ]
 
     candidates = OverlapEngine().documents_for_entities(

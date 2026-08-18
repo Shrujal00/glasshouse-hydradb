@@ -338,22 +338,34 @@ class GraphEngine:
         rows_by_seed: list[tuple[str, int, list[tuple[str, int]]]] = []
         by_doc: dict[str, list[tuple[str, int, int]]] = {}
         for eid, seed_id in seeds:
-            # The current engine rejects labeled node patterns after UNWIND, so
-            # batching is one bounded anchored query per seed rather than one
-            # unsupported set query.
+            # A labeled MATCH expansion is the obvious way to write this and is
+            # unusable here: on the loaded corpus it scans the whole
+            # MENTIONED_IN edge set, taking 15-30s per seed and often exceeding
+            # the engine's 30s cap, even with LIMIT 1 and even for an entity
+            # with a single alias. Anchoring the same hop with the native
+            # single-source path procedure reads the anchor's adjacency instead
+            # and returns 200 paths in well under a second. The engine also
+            # rejects labeled node patterns after UNWIND, so seeds stay one
+            # bounded query each rather than one batched set query.
             rows = self.query(
-                "MATCH (e:Entity {id: $id})-[:MENTIONED_IN]->(d:Document) "
-                "RETURN e.id AS seed_id, d.id AS document_node, d.doc_id AS doc_id "
-                f"LIMIT {limit}",
-                {"id": seed_id},
+                f"CALL algo.SSpaths({{sourceNode: {int(seed_id)}, "
+                f"relTypes: ['MENTIONED_IN'], relDirection: 'outgoing', "
+                f"maxLen: 1, pathCount: {limit}}}) YIELD path RETURN path",
                 strong=True,
             )
             reached: list[tuple[str, int]] = []
+            seen_docs: set[str] = set()
             for row in rows:
-                doc_id = str(row.values.get("doc_id") or "")
-                document_node = int(row.values.get("document_node") or -1)
-                if doc_id:
-                    reached.append((doc_id, document_node))
+                path = row.values.get("path") or {}
+                for node in path.get("nodes", []):
+                    if not isinstance(node, dict):
+                        continue
+                    doc_id = str((node.get("properties") or {}).get("doc_id") or "")
+                    # The source Entity node rides along in every path and
+                    # carries no doc_id, which is what excludes it here.
+                    if doc_id and doc_id not in seen_docs:
+                        seen_docs.add(doc_id)
+                        reached.append((doc_id, int(node.get("id") or -1)))
             rows_by_seed.append((eid, seed_id, reached))
 
         # Round-robin keeps one high-degree entity from consuming the entire

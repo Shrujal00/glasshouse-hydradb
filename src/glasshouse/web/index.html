@@ -402,8 +402,10 @@ function step(what, num, ms){
     `<span class="num">${esc(num ?? '')}</span><span class="ms">${ms != null ? ms+'ms' : ''}</span></div>`);
 }
 const titles = {};
+let connected = 0;
 function reset(){
   for (const k in titles) delete titles[k];
+  connected = 0;
   queue.length = 0; playing = false; streamEnded = false;
   $('ans-block').hidden = true; $('ans').innerHTML = ''; $('ans-src').innerHTML = '';
   nodes.clear(); links.length = 0; alpha = 0;
@@ -535,6 +537,10 @@ function render(ev){
       }
       case 'graph_scope':
         if (!ev.available){ step('hydradb unreachable', 'graph skipped'); break; }
+        if (!ev.entities.length){
+          step('no person named in the question', 'entering from evidence');
+          break;
+        }
         step('hydradb reached from ' + ev.entities.length + ' entities',
              ev.candidates + ' candidate docs');
         break;
@@ -551,6 +557,14 @@ function render(ev){
           `${esc(titles[ev.doc_id] || ev.doc_id)}</span></div>`);
         break;
       case 'connected_entity':
+        connected += 1;
+        if (connected === 1)
+          $('trace').insertAdjacentHTML('beforeend',
+            '<div class="step"><span class="tick">▸</span>' +
+            '<span class="what">hydradb connected people to the evidence</span>' +
+            '<span class="num" id="conn-count"></span><span class="ms"></span></div>');
+        $('conn-count').textContent =
+          connected + (ev.documents > 1 ? ' (corroborated)' : '');
         $('ab-block').hidden = false;
         if (!$('ab').dataset.connected){
           $('ab').dataset.connected = '1';

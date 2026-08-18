@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import threading
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
@@ -97,20 +98,36 @@ class LocalRecall:
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or INDEX_PATH
-        self._conn: sqlite3.Connection | None = None
+        self._local = threading.local()
         self._total: int | None = None
 
     @property
     def conn(self) -> sqlite3.Connection:
-        if self._conn is None:
-            self._conn = sqlite3.connect(self.path)
-            self._conn.row_factory = sqlite3.Row
-        return self._conn
+        """This thread's connection.
+
+        A SQLite connection belongs to the thread that opened it, and one
+        `LocalRecall` is shared by every request the server answers on its
+        worker pool. Handing the first thread's connection to the second
+        raises "SQLite objects created in a thread can only be used in that
+        same thread" -- intermittently, depending on which worker took the
+        request. Reads are the whole workload here, so a connection per
+        thread costs nothing and needs no lock. `search_scoped` also builds a
+        temporary table, which is per-connection and so stays private too.
+        """
+        local = self.__dict__.setdefault("_local", threading.local())
+        conn = getattr(local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(self.path)
+            conn.row_factory = sqlite3.Row
+            local.conn = conn
+        return conn
 
     def close(self) -> None:
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+        local = self.__dict__.setdefault("_local", threading.local())
+        conn = getattr(local, "conn", None)
+        if conn is not None:
+            conn.close()
+            local.conn = None
 
     # --- build ---------------------------------------------------------------
 

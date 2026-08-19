@@ -40,7 +40,7 @@ import re
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterable, Sequence
 
 from .config import get, require
@@ -156,6 +156,11 @@ class ClaimNode:
     rationale: str
     gen: str
     node: int
+    # Which camp this claim is in, within one disagreement. -1 when the claim
+    # was not read through a disagreement, because "no side" and "side 0" are
+    # different things and a default of 0 would silently put every claim in
+    # the winning camp.
+    side: int = -1
 
     @property
     def cite(self) -> str:
@@ -989,17 +994,34 @@ class GraphEngine:
             )
             if not head:
                 return None, []
+            # `side` comes off the edge, not the claim: which camp a claim is
+            # in is a fact about this disagreement, and the same claim could
+            # in principle sit in another. Without it the panel lists five
+            # claims flat when it is really three positions, two of which are
+            # corroborated -- which reads as five competing values and
+            # overstates how confused the corpus is.
             rows = self.query(
-                f"MATCH (d:Disagreement {{id: {anchor}}})-[:OVER]->(c:Claim)"
+                f"MATCH (d:Disagreement {{id: {anchor}}})-[r:OVER]->(c:Claim)"
                 + (f" WHERE c.gen = '{_literal(gen)}'" if gen else "")
                 + " RETURN "
                 + _CLAIM_FIELDS
-                + " ORDER BY c.trust DESC",
+                + ", r.side AS side"
+                " ORDER BY c.trust DESC",
                 strong=True,
             )
         except GraphError:
             return None, []
-        return _disagreement(head[0].values), [_claim(row.values) for row in rows]
+        claims = []
+        for row in rows:
+            side = int(row.values.get("side") or 0)
+            claims.append((side, replace(_claim(row.values), side=side)))
+        # Sides in trust order, claims within a side in trust order, so the
+        # strongest position reads first and its corroboration sits under it.
+        best: dict[int, float] = {}
+        for side, node in claims:
+            best[side] = max(best.get(side, 0.0), node.trust)
+        claims.sort(key=lambda pair: (-best[pair[0]], pair[0], -pair[1].trust))
+        return _disagreement(head[0].values), [node for _, node in claims]
 
     def claim_history(self, claim_id: str, depth: int = 6) -> list[dict[str, Any]]:
         """What this value used to be, and what corrected it.
@@ -1086,7 +1108,22 @@ class GraphEngine:
         # Strongest connection first: sending a document is evidence you meant
         # what it says, being named in one is not.
         order = {"sent": 0, "spoke in": 1, "named in": 2}
-        return sorted(out, key=lambda r: (order[r["how"]], r["name"]))[:limit]
+        out.sort(key=lambda r: (order[r["how"]], r["name"]))
+        # One row per person, at their strongest exposure. Someone who both
+        # sent a document and is named in it is one person in one position,
+        # and listing them twice overstates the blast. Collapsed on the
+        # canonical name rather than the entity id because the ontology can
+        # carry two ids under one name, and a reader seeing the same name
+        # twice reads it as a bug rather than as two people.
+        seen_people: set[str] = set()
+        unique: list[dict[str, Any]] = []
+        for row in out:
+            who = (row["name"] or row["eid"]).casefold()
+            if who in seen_people:
+                continue
+            seen_people.add(who)
+            unique.append(row)
+        return unique[:limit]
 
     def contradicted_by(self, claim_id: str, limit: int = 12) -> list["ClaimNode"]:
         """The claims that disagree with this one, straight off the edge."""

@@ -327,3 +327,92 @@ def test_duplicate_edges_in_one_batch_are_collapsed():
         {"src": 1, "dst": 3},
     ]
     assert len(loader._dedupe(rows)) == 2
+
+
+# --- values that only look like they disagree --------------------------------
+
+
+def test_a_longer_restatement_is_the_same_position():
+    """Extraction returns what the document said, and a document says
+    `resolved` in one place and `SUP-3812 is resolved` in another. Two
+    positions where the corpus has one is the most damaging thing this can do:
+    everything downstream then explains, with a rationale, why it picked a
+    side of an argument nobody is having."""
+    rows = build(
+        claim("resolved", predicate="status", subject="SUP-3812",
+              doc_id="d1", source="google_drive"),
+        claim("SUP-3812 (transient p95 spike) is resolved", predicate="status",
+              subject="SUP-3812", doc_id="d2", source="github"),
+    )
+    assert rows["disagreements"] == []
+
+
+def test_negation_is_never_folded_away():
+    """`not resolved` contains `resolved`, and collapsing them would hide the
+    one disagreement that matters most."""
+    rows = build(
+        claim("resolved", predicate="status", subject="SUP-3812", doc_id="d1"),
+        claim("not resolved", predicate="status", subject="SUP-3812",
+              doc_id="d2", source="slack"),
+    )
+    assert len(rows["disagreements"]) == 1
+
+
+def test_numbers_are_never_folded_into_longer_numbers():
+    """`20` sits inside `120`, and numbers are exactly where real
+    disagreements live."""
+    rows = build(
+        claim("20", doc_id="d1", source="confluence"),
+        claim("120", doc_id="d2", source="slack"),
+    )
+    assert len(rows["disagreements"]) == 1
+
+
+def test_folding_keeps_the_shortest_form_as_the_value():
+    """`resolved` is a status; `resolved after identifying a spike` is a status
+    plus a sentence about why."""
+    rows = build(
+        claim("resolved after identifying a transient spike", predicate="status",
+              subject="SUP-3812", doc_id="d1", source="jira"),
+        claim("resolved", predicate="status", subject="SUP-3812",
+              doc_id="d2", source="github"),
+        claim("opened", predicate="status", subject="SUP-3812",
+              doc_id="d3", source="hubspot"),
+    )
+    assert len(rows["disagreements"]) == 1
+    node = rows["disagreements"][0]
+    # Two sides, not three: the two ways of saying resolved are one position.
+    assert node["sides"] == 2
+
+
+def test_a_decision_that_cannot_be_explained_is_not_presented_as_one():
+    """The arithmetic can separate two claims by more than the margin while no
+    individual signal is nameable. `accepted — no signal separated these
+    claims` is a verdict contradicting its own reason, so it refuses instead."""
+    from glasshouse.trust import NO_SIGNAL, arbitrate
+
+    result = arbitrate([
+        claim("Landed PR + hotfix", predicate="status", subject="PR-28644",
+              doc_id="d1", source="linear", date="2025-03-22"),
+        claim("Approved", predicate="status", subject="PR-28644",
+              doc_id="d2", source="github", date="2025-03-22"),
+    ])
+    for conflict in result.conflicts:
+        assert not (conflict.decided and conflict.rationale == NO_SIGNAL)
+
+
+def test_an_undated_rival_is_named_as_the_reason_it_lost():
+    """An undated claim is scored as neither current nor stale, which costs it
+    trust against a dated one. That gap decided plenty of conflicts while the
+    rationale said nothing had separated them."""
+    from glasshouse.trust import arbitrate
+
+    result = arbitrate([
+        claim("Landed PR + hotfix", predicate="status", subject="PR-28644",
+              doc_id="d1", source="linear", date="2025-03-22"),
+        claim("Approved", predicate="status", subject="PR-28644",
+              doc_id="d2", source="github", date=""),
+    ])
+    conflict = result.conflicts[0]
+    if conflict.decided:
+        assert "no date" in conflict.rationale

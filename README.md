@@ -201,12 +201,26 @@ contradiction inside one Jira ticket is a typo; a contradiction between the
 Confluence page and the Slack thread about one work item is an organisation
 that has lost track of its own decision.
 
-Two constraints are worth stating plainly because they shaped the design:
+Measured on the current load: **260 work items** read,
+**668 claims** extracted, **59 disagreements**
+found, **35 of which the system refuses to settle**. The map query
+returns in **0.06s** — an unanchored label scan, which the engine only tolerates
+because `Disagreement` is a few dozen nodes rather than a few hundred thousand.
+
+Three constraints are worth stating plainly because they shaped the design:
 
 - **A disagreement must span two documents.** One meeting transcript listing
   three thresholds is one text read three times. Those claims are still
   written and still queryable — what they do not get is a node on a map
   asserting the company contradicts itself.
+- **A verdict has to name its reason.** The arithmetic can separate two claims
+  by more than the margin while no individual signal is nameable, and
+  *"accepted — no signal separated these claims"* is a verdict contradicting
+  its own rationale. Where nothing can be named, it refuses instead. Restated
+  values are folded first, so `resolved` and `SUP-3812 (transient p95 spike) is
+  resolved` are one position rather than two — a manufactured disagreement is
+  worse than a missed one, because everything downstream then explains, with a
+  rationale, why it picked a side of an argument nobody is having.
 - **Nothing in this graph can be deleted.** `DETACH DELETE` is refused by
   admission control even for a single anchored node with two edges, because
   deleting a vertex scans its edges. So a reload cannot replace the previous

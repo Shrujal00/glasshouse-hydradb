@@ -206,6 +206,7 @@ def disagreement(key: str) -> dict:
                 "doc_id": c.doc_id,
                 "title": c.title,
                 "cite": c.cite,
+                "side": c.side,
             }
             for c in claims
         ],

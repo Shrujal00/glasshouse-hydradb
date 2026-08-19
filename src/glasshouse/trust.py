@@ -101,6 +101,11 @@ MARGIN = 0.06
 
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+# What `_rationale` returns when nothing it can name separated the two claims.
+# Compared against rather than matched on text elsewhere, so the sentence can
+# be reworded without silently turning refusals back into verdicts.
+NO_SIGNAL = "no signal separated these claims"
+
 
 @dataclass(frozen=True)
 class Conflict:
@@ -233,6 +238,62 @@ def _value(claim: Claim) -> str:
     return re.sub(r"\s+%", "%", text)
 
 
+# Words that reverse a value. A sentence containing one of these is not a
+# longer way of saying the phrase inside it, it is the opposite of it, and
+# collapsing "not resolved" onto "resolved" would hide the one disagreement
+# that matters most.
+_NEGATION = re.compile(r"\b(not|no|never|without|isn t|wasn t|won t|cannot|can t|un\w+)\b")
+
+
+def _restates(short: str, long: str) -> bool:
+    """Whether `long` is the same assertion as `short`, said at more length.
+
+    Extraction returns what the document said, and a document says `resolved`
+    in one place and `SUP-3812 (transient p95 spike) is resolved` in another.
+    Those are one position stated twice, and treating them as two is the
+    system reporting a disagreement that nobody in the corpus is having --
+    the most damaging thing a contradiction graph can do, because every part
+    of it downstream then explains, with a rationale, why it picked a side of
+    an argument that does not exist.
+
+    Three guards, because over-merging hides real conflicts:
+
+    - the shorter value must appear at word boundaries, so `20` does not
+      collapse into `120`;
+    - it must carry a letter, so two bare numbers are never merged -- numbers
+      are exactly where a real disagreement usually lives;
+    - neither may negate where the other does not.
+    """
+    if not short or short == long or len(short) >= len(long):
+        return False
+    if not any(ch.isalpha() for ch in short):
+        return False
+    if re.search(rf"(?:^|\s){re.escape(short)}(?:$|\s)", long) is None:
+        return False
+    return bool(_NEGATION.search(short)) == bool(_NEGATION.search(long))
+
+
+def _fold(by_value: dict[str, list[Claim]]) -> dict[str, list[Claim]]:
+    """Collapse values that restate each other onto the shortest form.
+
+    The shortest wins because it is the one that is actually the value:
+    `resolved` is a status, `resolved after identifying a transient spike` is
+    a status plus a sentence about why.
+    """
+    keys = sorted(by_value, key=len)
+    canonical: dict[str, str] = {}
+    for key in keys:
+        canonical[key] = next(
+            (short for short in keys if short in canonical and short is not key
+             and canonical[short] == short and _restates(short, key)),
+            key,
+        )
+    folded: dict[str, list[Claim]] = {}
+    for key, holders in by_value.items():
+        folded.setdefault(canonical.get(key, key), []).extend(holders)
+    return folded
+
+
 def _explicitness(claim: Claim) -> float:
     return HEDGED if _HEDGES.search(claim.object_value.casefold()) else 1.0
 
@@ -310,6 +371,15 @@ def _rationale(
             f"asserted later ({winner.asserted_at} against {runner_up.asserted_at}) "
             f"and {predicate} is a value that changes over time"
         )
+    elif _dated(winner) and not _dated(runner_up):
+        # A real signal, and one that used to go unnamed: an undated claim is
+        # scored as neither current nor stale, which costs it trust against a
+        # dated rival. That gap decided plenty of conflicts while the rationale
+        # said nothing had separated them.
+        clauses.append(
+            f"the alternative carries no date, so it cannot be shown to be "
+            f"current, while this one is dated {winner.asserted_at}"
+        )
     if _explicitness(winner) > _explicitness(runner_up):
         clauses.append(f'the alternative hedges its value ("{runner_up.object_value}")')
     if winner.extractor_confidence > runner_up.extractor_confidence:
@@ -318,7 +388,7 @@ def _rationale(
             f"against {runner_up.extractor_confidence:.2g})"
         )
     if not clauses:
-        return "no signal separated these claims"
+        return NO_SIGNAL
     return "; ".join(clauses)
 
 
@@ -344,6 +414,7 @@ def arbitrate(claims: Sequence[Claim]) -> Arbitration:
         by_value: dict[str, list[Claim]] = {}
         for claim in members:
             by_value.setdefault(_value(claim), []).append(claim)
+        by_value = _fold(by_value)
         dates = sorted(d for d in (_dated(c) for c in members) if d)
         staleness = STALENESS.get(predicate, DEFAULT_STALENESS)
 
@@ -390,6 +461,14 @@ def arbitrate(claims: Sequence[Claim]) -> Arbitration:
             rationale = _rationale(
                 winner, len(ranked[0]), [runner_up], len(ranked[1]), predicate, recency_moved
             )
+            # A decision that cannot be explained is not presented as one. The
+            # arithmetic can separate two claims by more than the margin while
+            # no individual signal is nameable, and "accepted -- no signal
+            # separated these claims" is a verdict contradicting its own
+            # reason. Refusing is the honest reading of that state, and it is
+            # the same refusal the trust floor already performs.
+            decided = rationale != NO_SIGNAL
+        if decided:
             winner_status, loser_status = "accepted", "superseded" if recency_moved else "disputed"
         elif winner.trust < TRUST_FLOOR:
             rationale = (

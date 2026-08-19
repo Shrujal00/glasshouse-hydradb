@@ -1112,25 +1112,43 @@ function openDisagreement(key){
     const why = d.decided
       ? '<p class="det-why">' + esc(d.rationale) + '</p>'
       : '<p class="det-why open">no accepted value — ' + esc(d.rationale) + '</p>';
-    const claims = d.claims.map(c => {
-      const won = d.winner_claim_id && c.claim_id === d.winner_claim_id;
+    // Grouped by side, because the panel is showing positions rather than
+    // claims. Two documents stating the same thing are one position with
+    // corroboration; listing them flat reads as two competing values and
+    // overstates how much the corpus actually disagrees.
+    const sides = [];
+    d.claims.forEach(c => {
+      let group = sides.find(g => g.side === c.side);
+      if (!group) { group = {side: c.side, claims: []}; sides.push(group); }
+      group.claims.push(c);
+    });
+    const claims = sides.map((g, i) => {
+      const won = d.winner_claim_id &&
+        g.claims.some(c => c.claim_id === d.winner_claim_id);
       const cls = won ? 'cl won' : (d.decided ? 'cl lost' : 'cl');
+      const head = won ? 'accepted' : (d.decided ? 'rejected' : 'position ' + (i + 1));
+      const also = g.claims.length > 1
+        ? '<div class="m">corroborated by ' + g.claims.length + ' documents (' +
+          esc([...new Set(g.claims.map(c => c.source))].join(', ')) + ')</div>'
+        : '';
+      const lead = g.claims[0];
       return '<div class="' + cls + '">' +
-        '<div class="v">' + esc(c.value) + '</div>' +
-        '<div class="m"><span class="st">' + esc(c.status) + '</span>' +
-          '<span>' + esc(c.source) + (c.date ? ', ' + esc(c.date) : '') + '</span>' +
-          '<span>trust ' + c.trust.toFixed(2) + '</span></div>' +
-        '<div class="m">' + esc(c.title || c.doc_id) + '</div>' +
+        '<div class="v">' + esc(lead.value) + '</div>' +
+        '<div class="m"><span class="st">' + esc(head) + '</span>' +
+          '<span>' + esc(lead.source) + (lead.date ? ', ' + esc(lead.date) : '') + '</span>' +
+          '<span>trust ' + lead.trust.toFixed(2) + '</span></div>' +
+        '<div class="m">' + esc(lead.title || lead.doc_id) + '</div>' + also +
         '<div class="acts">' +
-          '<button data-history="' + esc(c.claim_id) + '">history</button>' +
-          '<button data-blast="' + esc(c.claim_id) + '">who read this</button>' +
+          '<button data-history="' + esc(lead.claim_id) + '">history</button>' +
+          '<button data-blast="' + esc(lead.claim_id) + '">who read this</button>' +
         '</div></div>';
     }).join('');
     $('map-detail').innerHTML =
       '<div class="det-head"><div class="k">' + esc(d.scope) + ' · ' +
         esc(d.predicate) + '</div><h3>' + esc(d.subject) + '</h3>' + why + '</div>' +
-      '<div class="side"><div class="lbl">' + d.claims.length +
-        ' competing claims across ' + esc(d.sources.join(', ')) + '</div>' +
+      '<div class="side"><div class="lbl">' + sides.length +
+        ' positions, ' + d.claims.length + ' claims across ' +
+        esc(d.sources.join(', ')) + '</div>' +
         claims + '</div>' +
       '<div class="side" id="det-extra" hidden></div>';
   }).catch(() => { $('map-detail').innerHTML =

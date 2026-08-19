@@ -138,6 +138,45 @@ benchmark's own `answer_facts` rubric with an LLM judge, one fact at a time.
 The answer key lives **outside this repository** and only the two scoring
 scripts may read it; nothing under `src/glasshouse` can see it.
 
+Measured 2026-08-20, 20 questions per category. The baseline is the same
+harness run on 2026-08-18, before any of the work below.
+
+| Category | Questions | Fact recall |
+|---|---:|---:|
+| `info_not_found` — knowing the answer is absent | 20 | **100%** |
+| `intra_document_reasoning` | 40 | **81%** |
+| `constrained` | 30 | **67%** |
+| `conflicting_info` — the arbitration case | 20 | **59%** |
+| `basic` | 175 | 40% |
+| `project_related` | 40 | 38% |
+| `metadata` — authorship, ownership, location | 100 | 32% |
+| `completeness` | 20 | 32% |
+| `semantic` — deliberate paraphrase | 125 | 29% |
+| **weighted overall** | **570 / 600** | **≈44%**  (from 35.5%) |
+
+`miscellaneous` and `high_level` (30 questions) are not yet measured.
+
+What moved, and why:
+
+- **`metadata` went from 0% to 32%.** It sat at exactly zero across two
+  independent runs. The cause was not the model: the facet fields were
+  normalized and then discarded, so the answer to "which space is this page
+  in" was never in the index and never shown to the model. Indexing the facets,
+  scoping by container and reranking a deep page took the expected document
+  reaching the model from 8/30 to 16/30.
+- **`conflicting_info` went from ~52% to 59%**, after claims arbitration and
+  after recovering the dates that arbitration ranks on.
+- **`info_not_found` held at 100%** through every prompt change — including the
+  ones that deliberately made the system more willing to answer elsewhere. That
+  it did not move is the result.
+
+One change mattered more than any retrieval work. `ask()` used to refuse
+outright when no person resolved in the retrieved documents — so "who authored
+the SLO throttler PR", whose answer *is* a person and which names none, was
+returned as an empty string with the correct document sitting in the context.
+`stream()` never had that gate, so the interface answered questions the graded
+path silently declined.
+
 <!-- RESULTS -->
 
 ### Things we measured that did not work

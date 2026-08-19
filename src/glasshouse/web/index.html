@@ -145,6 +145,24 @@
   .conn b{color:var(--ink); font-weight:500}
   .conn .via{color:var(--evidence)}
 
+  /* Competing claims. The rejected value stays legible rather than greyed to
+     nothing: the point of showing arbitration is that the reader can disagree
+     with it, and a value they cannot read is a value they must take on trust. */
+  .clash{border-left:2px solid var(--doubt); padding-left:12px; margin:12px 0}
+  .clash .subj{font-family:var(--mono); font-size:10px; color:var(--doubt);
+    text-transform:uppercase; letter-spacing:.1em}
+  .claim{display:flex; gap:8px; font-size:12px; padding:4px 0; align-items:baseline}
+  .claim .verdict{font-family:var(--mono); font-size:9.5px; letter-spacing:.06em;
+    flex:none; width:64px; text-transform:uppercase}
+  .claim .val{color:var(--ink)}
+  .claim .src{color:var(--dim); font-size:10.5px; font-family:var(--mono)}
+  .claim.won .verdict{color:var(--evidence)}
+  .claim.lost .verdict{color:var(--doubt)}
+  .claim.lost .val{color:var(--slate); text-decoration:line-through}
+  .clash .why{font-size:11.5px; color:var(--slate); margin-top:6px; font-style:italic}
+  .clash.undecided{border-left-color:var(--slate)}
+  .clash.undecided .claim .val{text-decoration:none; color:var(--ink)}
+
   .abstain{border-left:2px solid var(--doubt); padding-left:12px}
   .abstain .gate{font-family:var(--mono); font-size:10px; color:var(--doubt);
     text-transform:uppercase; letter-spacing:.1em}
@@ -202,6 +220,7 @@
       <div id="ab-docs"></div>
     </div>
     <div class="block" id="conn-block" hidden><h2>connections found by hydradb</h2><div id="conn"></div></div>
+    <div class="block" id="claims-block" hidden><h2>competing claims</h2><div id="claims"></div></div>
   </aside>
 </main>
 
@@ -409,8 +428,9 @@ function reset(){
   queue.length = 0; playing = false; streamEnded = false;
   $('ans-block').hidden = true; $('ans').innerHTML = ''; $('ans-src').innerHTML = '';
   nodes.clear(); links.length = 0; alpha = 0;
-  for (const id of ['trace','who','ev','conn','ab','ab-docs']) $(id).innerHTML = '';
-  for (const id of ['who-block','ev-block','conn-block','ab-block']) $(id).hidden = true;
+  for (const id of ['trace','who','ev','conn','ab','ab-docs','claims']) $(id).innerHTML = '';
+  for (const id of ['who-block','ev-block','conn-block','ab-block','claims-block'])
+    $(id).hidden = true;
   delete $('ab-docs').dataset.titled; delete $('ab').dataset.connected;
   $('hint').style.display = 'none';
 }
@@ -441,7 +461,10 @@ let playing = false, streamEnded = false;
 // Each kind of event gets its own beat. Documents fall like rain; a person
 // lands and is given a moment before the surfaces that make them up fly in.
 const BEAT = {document: 55, entity: 230, alias: 95, link: 16, path: 170,
-              answer_chunk: 0, writing: 120, answer: 0};
+              answer_chunk: 0, writing: 120, answer: 0,
+              // The disagreement is the thing worth watching land, so it gets
+              // a beat long enough to read before the verdict follows it.
+              conflict_found: 420, winner_chosen: 260, containers: 150};
 
 function enqueue(ev){
   queue.push(ev);
@@ -596,6 +619,48 @@ function render(ev){
         $('conn').insertAdjacentHTML('beforeend',
           `<div class="conn"><b>${esc(ev.a)}</b> ─ <span class="via">${esc((ev.via?.[0]||'').slice(0,44))}</span> ─ <b>${esc(ev.b)}</b></div>`);
         break;
+      case 'containers':
+        // Which entrance opened matters more than that one did. The local
+        // facet table serves the same scope when the graph half is missing,
+        // and saying "hydradb" for that would be the third overstated label.
+        if (ev.named?.length){
+          const where = ev.named.map(c => c.key).join(', ');
+          step(ev.entrance === 'hydradb'
+                 ? 'hydradb reached from ' + ev.named.length +
+                   (ev.named.length === 1 ? ' container' : ' containers')
+                 : 'container scope from the facet table',
+               where.slice(0, 58));
+          if (ev.only) step('found only inside that scope', ev.only + ' docs');
+        }
+        break;
+      case 'conflict_found':
+        $('claims-block').hidden = false;
+        $('claims').insertAdjacentHTML('beforeend',
+          `<div class="clash" data-key="${esc(ev.subject + '|' + ev.predicate)}">` +
+          `<div class="subj">${esc(ev.predicate)} of ${esc(ev.subject)} — ` +
+          `${ev.values.length} competing values</div></div>`);
+        step('sources disagree', ev.predicate + ' of ' + ev.subject);
+        break;
+      case 'winner_chosen': {
+        const box = $('claims').querySelector(
+          `[data-key="${CSS.escape(ev.subject + '|' + ev.predicate)}"]`);
+        if (!box) break;
+        if (!ev.decided) box.classList.add('undecided');
+        const row = (cls, verdict, value, source) =>
+          `<div class="claim ${cls}"><span class="verdict">${esc(verdict)}</span>` +
+          `<span class="val">${esc(value ?? '—')}</span>` +
+          `<span class="src">${esc(source || '')}</span></div>`;
+        box.insertAdjacentHTML('beforeend',
+          ev.decided
+            ? row('won', 'accepted', ev.value, ev.source)
+            : row('', 'no winner', '(not decided)', ev.source));
+        for (const r of ev.rejected || [])
+          box.insertAdjacentHTML('beforeend', row('lost', r.status, r.value, r.source));
+        box.insertAdjacentHTML('beforeend', `<div class="why">${esc(ev.why)}</div>`);
+        step(ev.decided ? 'chose a value' : 'declined to choose',
+             ev.decided ? String(ev.value ?? '').slice(0, 40) : 'too close to call');
+        break;
+      }
       case 'abstain':
         step('abstained', ev.gate, ev.ms);
         $('who-block').hidden = false;

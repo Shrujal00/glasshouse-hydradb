@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Iterator, Sequence
 
 from .config import NORMALIZED, STATE
+from .corpus import derive_date
 
 INDEX_PATH = STATE / "recall.sqlite3"
 
@@ -548,7 +549,7 @@ def iter_normalized(sources: Sequence[str]) -> Iterator[tuple]:
                     doc.get("title") or "",
                     doc.get("body") or "",
                     _facet_text(doc),
-                    doc.get("date") or "",
+                    derive_date(doc),
                     doc.get("ticket_key") or "",
                     doc.get("thread_id") or "",
                 )

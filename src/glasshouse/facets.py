@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Iterator, Sequence
 
 from .config import NORMALIZED, STATE
+from .corpus import derive_date
 
 FACETS = STATE / "facets.sqlite3"
 
@@ -762,7 +763,7 @@ def _facet_row(doc_id: str, source: str, record: dict) -> tuple:
         doc_id,
         record.get("source") or source,
         record.get("title") or "",
-        record.get("date") or "",
+        derive_date(record),
         record.get("ticket_key") or "",
         record.get("thread_id") or "",
         record.get("slug") or "",

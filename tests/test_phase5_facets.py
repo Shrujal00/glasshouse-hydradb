@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 
 from glasshouse.facets import FacetStore
+from glasshouse.corpus import derive_date
 
 
 def write_normalized(root: Path, source: str, rows: list[dict]) -> None:
@@ -282,3 +283,25 @@ def test_documents_in_deduplicates_across_overlapping_containers(tmp_path):
     store = build_store(tmp_path)
     keys = ["google_drive:folder:eng-serving-runtime", "google_drive:folder:shared_drives"]
     assert store.documents_in(keys, limit=5) == ["g1", "g2"]
+
+
+def test_derive_date_prefers_the_stated_field():
+    assert derive_date({"date": "2026-02-12", "body": "logged 2025-01-01"}) == "2026-02-12"
+
+
+def test_derive_date_reads_the_latest_date_out_of_an_activity_log():
+    # Linear and Jira write no date field and a dated log instead; the latest
+    # entry is the document's most recent activity, which is what recency asks.
+    body = "2025-02-14 - opened\n2025-02-18 - triaged\n2025-03-02 - shipped"
+    assert derive_date({"body": body}) == "2025-03-02"
+
+
+def test_derive_date_gives_nothing_rather_than_a_guess():
+    # Slack writes "Wednesday Jul 14"; no ISO date means no date, not an
+    # invented one, because a wrong date ranks a claim wrongly.
+    assert derive_date({"body": "all-hands this Wednesday Jul 14 10:00 PT"}) == ""
+    assert derive_date({}) == ""
+
+
+def test_derive_date_ignores_numbers_that_only_look_like_dates():
+    assert derive_date({"body": "build 12345-67-89 and version 1.2.3"}) == ""

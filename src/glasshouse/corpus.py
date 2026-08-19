@@ -285,6 +285,38 @@ def iter_source_files(root: Path, source: str):
     yield from sorted((root / source).rglob("*.txt"))
 
 
+_BODY_DATE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+
+
+def derive_date(record: dict) -> str:
+    """The document's own date, or the latest one written inside it.
+
+    Only Gmail and Fireflies carry a date field: measured across the corpus,
+    the other seven sources record one on under 2% of their documents, which is
+    285,605 Slack messages and every Jira ticket with no date at all. That is
+    not a cosmetic gap. Arbitration ranks competing claims partly on recency,
+    and a claim with no date cannot be ranked on it, so a later correction and
+    the earlier report it corrects arrive at the adjudicator indistinguishable.
+
+    Linear, Jira, HubSpot and Confluence write their dates into the body
+    instead, as dated activity logs and revision histories. The latest of those
+    is taken: for a log that grows downwards it is the last entry, which is the
+    document's most recent activity and the thing recency is asking about.
+
+    The heuristic is honest about being one. A document whose only date is a
+    future deadline gets that deadline, which is wrong for "last updated" and
+    right for "due date"; both beat having no date at all. Slack and GitHub
+    write no ISO dates, so they keep none rather than being given a guess.
+    """
+    stated = (record.get("date") or "").strip()
+    if stated:
+        return stated
+    found = _BODY_DATE.findall(record.get("body") or "")
+    if not found:
+        return ""
+    return max("-".join(parts) for parts in found)
+
+
 SOURCES = (
     "slack",
     "gmail",

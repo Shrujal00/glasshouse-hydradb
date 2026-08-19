@@ -20,7 +20,7 @@ from glasshouse.recall import LocalRecall
 def test_recall_index_is_usable_from_several_threads(tmp_path):
     recall = LocalRecall(tmp_path / "recall.sqlite3")
     recall.create()
-    recall.add([("d1", "slack", "Retention", "retention policy notes", "", "", "")])
+    recall.add([("d1", "slack", "Retention", "retention policy notes", "", "", "", "")])
     # Open the connection on this thread first, exactly as a first request does.
     assert recall.count() == 1
 
@@ -65,7 +65,7 @@ def test_documents_are_fetched_by_rowid_not_by_scanning(tmp_path):
     recall = LocalRecall(tmp_path / "recall.sqlite3")
     recall.create()
     recall.add([
-        (f"d{i}", "slack", f"Title {i}", f"body {i}", "", "", "") for i in range(50)
+        (f"d{i}", "slack", f"Title {i}", f"body {i}", "", "", "", "") for i in range(50)
     ])
     recall.build_docmap()
 
@@ -74,6 +74,6 @@ def test_documents_are_fetched_by_rowid_not_by_scanning(tmp_path):
     assert recall.get("d11").title == "Title 11"
     assert recall.get_many(["nope"]) == []
     # A document added after the map is built must still be findable.
-    recall.add([("late", "slack", "Late", "body late", "", "", "")])
+    recall.add([("late", "slack", "Late", "body late", "", "", "", "")])
     recall.build_docmap()
     assert recall.get("late").title == "Late"

@@ -64,7 +64,7 @@ def test_match_count_reports_the_whole_corpus_not_the_page(tmp_path):
     recall = LocalRecall(tmp_path / "recall.sqlite3")
     recall.create()
     recall.add([
-        (f"d{i}", "slack", "Keycard audit", "keycard access log retention", "", "", "")
+        (f"d{i}", "slack", "Keycard audit", "keycard access log retention", "", "", "", "")
         for i in range(30)
     ])
     assert recall.match_count("what does the keycard audit require?") == 30

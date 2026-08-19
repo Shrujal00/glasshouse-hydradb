@@ -132,8 +132,19 @@ class LocalRecall:
     # --- build ---------------------------------------------------------------
 
     def create(self) -> None:
-        """(Re)create the index. Metadata columns are unindexed - they are for
-        filtering and citation, and indexing them would dilute BM25."""
+        """(Re)create the index.
+
+        `date`, `ticket_key` and `thread_id` stay unindexed - they are for
+        filtering and citation, and indexing them would dilute BM25.
+
+        `facets` is the exception, and it is indexed deliberately. The
+        normalized records carry the folder, the channel, the speakers and the
+        mail headers, and none of it used to reach the index at all: a question
+        asking "in the internal customer success and support knowledge space"
+        was matched only against prose that never names the space it is filed
+        in. It is its own column rather than appended to the body so it can
+        carry its own BM25 weight and so a match in it stays attributable.
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = self.conn
         conn.executescript(
@@ -146,6 +157,7 @@ class LocalRecall:
                 source UNINDEXED,
                 title,
                 body,
+                facets,
                 date UNINDEXED,
                 ticket_key UNINDEXED,
                 thread_id UNINDEXED,
@@ -158,8 +170,8 @@ class LocalRecall:
 
     def add(self, rows: Sequence[tuple]) -> None:
         self.conn.executemany(
-            "INSERT INTO docs (doc_id, source, title, body, date, ticket_key, thread_id)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO docs (doc_id, source, title, body, facets, date, ticket_key, thread_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
 
@@ -296,7 +308,13 @@ class LocalRecall:
         else:
             match = " OR ".join(f'"{t}"' for t in (terms or extra))
         sql = (
-            "SELECT doc_id, source, title, body, date, bm25(docs, 0.0, 0.0, 4.0, 1.0) AS rank"
+            # title 4x, facets 2x, body 1x. The facet column is a handful of
+            # short precise strings rather than prose, so a match in it is a
+            # stronger signal per token than a body match and a weaker one than
+            # a title match -- and BM25 already divides by field length, so the
+            # weight is the only thumb on the scale.
+            "SELECT doc_id, source, title, body, date,"
+            " bm25(docs, 0.0, 0.0, 4.0, 1.0, 2.0) AS rank"
             " FROM docs WHERE docs MATCH ?"
         )
         params: list = [match]
@@ -479,6 +497,42 @@ class LocalRecall:
         ]
 
 
+# The header fields worth searching. `from` and `to` carry the people a mail
+# question is about; `subject` restates the topic in the words the asker is
+# likely to reuse; `attachments` is the only place a filename appears at all.
+_HEADER_FIELDS = ("from", "to", "cc", "subject", "attachments")
+
+# What goes into the searchable facet column. Emails and mentions are
+# deliberately absent: the ontology already resolves people and feeds them back
+# through `search(also=...)`, and duplicating every address here would put a
+# second copy of every name in the index for the identity path to trip over.
+_FACET_FIELDS = ("slug", "folders", "channels", "speakers", "attendees")
+
+
+def _facet_text(doc: dict) -> str:
+    """The filing details, flattened into one searchable string.
+
+    Hyphens and underscores are left in place rather than split by hand:
+    `unicode61` already tokenises `customer-success-and-support` into its four
+    words, so "the customer success and support space" matches the folder it
+    names without the caller having to guess the punctuation.
+    """
+    parts: list[str] = []
+    for field in _FACET_FIELDS:
+        value = doc.get(field)
+        if isinstance(value, str):
+            parts.append(value)
+        elif isinstance(value, (list, tuple)):
+            parts.extend(str(item) for item in value if isinstance(item, (str, int)))
+    headers = doc.get("headers")
+    if isinstance(headers, dict):
+        parts.extend(
+            str(headers[field]) for field in _HEADER_FIELDS
+            if isinstance(headers.get(field), str)
+        )
+    return " ".join(part for part in parts if part)
+
+
 def iter_normalized(sources: Sequence[str]) -> Iterator[tuple]:
     """Stream normalized shards as index rows."""
     for source in sources:
@@ -493,6 +547,7 @@ def iter_normalized(sources: Sequence[str]) -> Iterator[tuple]:
                     doc.get("source") or source,
                     doc.get("title") or "",
                     doc.get("body") or "",
+                    _facet_text(doc),
                     doc.get("date") or "",
                     doc.get("ticket_key") or "",
                     doc.get("thread_id") or "",

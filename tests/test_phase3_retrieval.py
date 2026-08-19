@@ -48,6 +48,7 @@ def make_phase3_asker(tmp_path):
                 "",
                 "",
                 "",
+                "",
             ),
             (
                 "answer",
@@ -57,12 +58,14 @@ def make_phase3_asker(tmp_path):
                 "",
                 "",
                 "",
+                "",
             ),
             (
                 "unrelated",
                 "slack",
                 "Sam notes",
                 "Sam attended an unrelated meeting.",
+                "",
                 "",
                 "",
                 "",
@@ -149,7 +152,7 @@ def test_stream_and_non_streaming_emit_graph_provenance_and_use_final_docs(
     monkeypatch.setattr(asker, "identify", lambda docs: {})
     monkeypatch.setattr(asker, "resolve", lambda surfaces: named)
 
-    def write(question, docs, people, paths, connected=()):
+    def write(question, docs, people, paths, connected=(), **kwargs):
         answer_number = next(i for i, doc in enumerate(docs, 1) if doc.doc_id == "answer")
         return Written(f"Thirty days [{answer_number}]", False, [answer_number])
 
@@ -240,8 +243,8 @@ def test_get_many_preserves_requested_order(tmp_path):
     recall = LocalRecall(tmp_path / "recall.sqlite3")
     recall.create()
     recall.add([
-        ("one", "slack", "One", "", "", "", ""),
-        ("two", "slack", "Two", "", "", "", ""),
+        ("one", "slack", "One", "", "", "", "", ""),
+        ("two", "slack", "Two", "", "", "", "", ""),
     ])
     recall.optimize()
     assert [doc.doc_id for doc in recall.get_many(["two", "missing", "one"])] == [
@@ -254,10 +257,10 @@ def test_scoped_ranking_backfills_after_higher_coverage_duplicates(tmp_path):
     recall = LocalRecall(tmp_path / "recall.sqlite3")
     recall.create()
     rows = [
-        (f"both-{i}", "slack", "alpha beta", "", "", "", "")
+        (f"both-{i}", "slack", "alpha beta", "", "", "", "", "")
         for i in range(10)
     ] + [
-        (f"one-{i}", "slack", "alpha", "", "", "", "")
+        (f"one-{i}", "slack", "alpha", "", "", "", "", "")
         for i in range(20)
     ]
     recall.add(rows)
@@ -273,10 +276,10 @@ def test_scoped_ranking_never_exceeds_limit(tmp_path):
     recall = LocalRecall(tmp_path / "recall.sqlite3")
     recall.create()
     rows = [
-        (f"both-{i}", "slack", "alpha beta", "", "", "", "")
+        (f"both-{i}", "slack", "alpha beta", "", "", "", "", "")
         for i in range(10)
     ] + [
-        (f"one-{i}", "slack", "alpha", "", "", "", "")
+        (f"one-{i}", "slack", "alpha", "", "", "", "", "")
         for i in range(30)
     ]
     recall.add(rows)

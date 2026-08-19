@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -58,6 +59,19 @@ def node_id(key: str) -> int:
 
 class GraphError(RuntimeError):
     pass
+
+
+_WRITES = re.compile(r"\b(MERGE|CREATE|SET|DELETE|REMOVE)\b")
+
+
+def write_key(cypher: str, parameters: dict[str, Any] | None) -> str:
+    """Idempotency key for a write: a digest of the statement and its payload.
+
+    Unique per distinct write, identical for a replay of the same one, which is
+    exactly the contract the engine's importer wants — see `query`.
+    """
+    body = json.dumps(parameters or {}, sort_keys=True, default=str)
+    return hashlib.blake2b(f"{cypher}\x00{body}".encode(), digest_size=16).hexdigest()
 
 
 @dataclass(slots=True)
@@ -154,6 +168,20 @@ class GraphEngine:
             payload["parameters"] = parameters
         if strong:
             payload["consistency"] = "strong"
+        # Every import the engine performs is deduplicated against an
+        # idempotency key, and when the payload does not name one the engine
+        # invents it from a per-process request counter:
+        # `http-query-104.unwind-relationship-merge`. That counter restarts
+        # with the container, so after a restart each write collides with
+        # whatever the previous run stored under the same number and comes back
+        # as `500 internal query execution error` — measured on the loaded
+        # graph as 3 of 4 relationship MERGEs failing, non-deterministically,
+        # with the real reason only visible in `docker logs`. Keying on the
+        # payload instead makes the key unique per statement and identical for
+        # a replay, which is what makes the retry below idempotent rather than
+        # merely lucky.
+        if _WRITES.search(cypher):
+            payload["query_id"] = write_key(cypher, parameters)
 
         request = urllib.request.Request(
             f"{self.base}/v1/graphs/{self.graph_id}/query",
@@ -397,6 +425,115 @@ class GraphEngine:
             (found[eid] for eid in order),
             key=lambda e: (-e.documents, order.index(e.eid)),
         )
+
+    def documents_in_containers(
+        self, containers: Sequence[tuple[str, int]], limit: int = 200
+    ) -> list[GraphCandidate]:
+        """Documents held by the containers a question named, one hop inwards.
+
+        The third entrance. `documents_for_entities` needs the question to name
+        a person and `entities_for_documents` needs retrieval to have already
+        found the right documents; a question like "in the internal customer
+        success and support knowledge space" names neither, it names a *place*.
+        Folders and channels are that place, and they are nodes here, so the
+        scope is a single anchored hop rather than a keyword guess.
+
+        Containers arrive as `(container_key, node_id)` pairs, the same shape
+        `documents_for_entities` takes, because the caller holds the local
+        facet table and already knows both halves; the node id is always
+        `node_id(f"container:{key}")`.
+
+        Fails soft on purpose. The container half of the graph may not be
+        loaded yet -- the load is long and the engine has an ingest ceiling --
+        and while it is missing the local `FacetStore` serves the same scope.
+        An absent anchor returns no paths rather than an error, and a rejected
+        query is skipped, so this returns `[]` instead of taking the answer
+        down with it. The trace names which entrance actually opened, so an
+        empty return here is visible rather than papered over.
+        """
+        if not containers or limit <= 0:
+            return []
+        rows_by_container: list[tuple[str, int, list[tuple[str, int]]]] = []
+        for key, container_id in containers:
+            try:
+                # Anchored at the container exactly as the entity path is
+                # anchored at the person: read the anchor's own adjacency with
+                # `algo.SSpaths` rather than expanding a labeled `MATCH`, which
+                # scans the whole edge set and blows the engine's 30s cap.
+                rows = self.query(
+                    f"CALL algo.SSpaths({{sourceNode: {int(container_id)}, "
+                    f"relTypes: ['IN_CONTAINER'], relDirection: 'incoming', "
+                    f"maxLen: 1, pathCount: {limit}}}) YIELD path RETURN path",
+                    strong=True,
+                )
+            except GraphError:
+                continue
+            reached: list[tuple[str, int]] = []
+            seen_docs: set[str] = set()
+            for row in rows:
+                path = row.values.get("path") or {}
+                for node in path.get("nodes", []):
+                    if not isinstance(node, dict):
+                        continue
+                    doc_id = str((node.get("properties") or {}).get("doc_id") or "")
+                    # The Container node rides along in every path and carries
+                    # a key rather than a doc_id, which is what excludes it.
+                    if doc_id and doc_id not in seen_docs:
+                        seen_docs.add(doc_id)
+                        reached.append((doc_id, int(node.get("id") or -1)))
+            rows_by_container.append((key, int(container_id), reached))
+
+        # Round-robin, as with entity seeds: #incidents holds 28,999 documents
+        # and the median container holds one, so taking containers in turn
+        # keeps the huge one from consuming the entire scope.
+        by_doc: dict[str, list[tuple[str, int, int]]] = {}
+        for rank in range(limit):
+            for key, container_id, reached in rows_by_container:
+                if rank < len(reached):
+                    doc_id, document_node = reached[rank]
+                    by_doc.setdefault(doc_id, []).append((key, container_id, document_node))
+
+        candidates: list[GraphCandidate] = []
+        for doc_id, reached in list(by_doc.items())[:limit]:
+            paths = []
+            seen_keys: set[str] = set()
+            for key, container_id, document_node in reached:
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                paths.append(
+                    {
+                        "seed_eid": key,
+                        "nodes": [
+                            {
+                                "id": document_node,
+                                "labels": ["Document"],
+                                "properties": {"doc_id": doc_id},
+                            },
+                            {"id": container_id, "labels": ["Container"], "properties": {"key": key}},
+                        ],
+                        "relationships": [
+                            {
+                                "edge_type": "IN_CONTAINER",
+                                "src": document_node,
+                                "dst": container_id,
+                            }
+                        ],
+                    }
+                )
+            candidates.append(
+                GraphCandidate(
+                    doc_id=doc_id,
+                    # The seed is a container, not a person. Callers render this
+                    # into the trace, so it carries the container key and the
+                    # reason says container, never "reached from an entity".
+                    seed_eids=tuple(sorted(seen_keys)),
+                    path={"paths": paths},
+                    hops=1,
+                    reason="direct Document-[:IN_CONTAINER]->Container membership",
+                )
+            )
+        return candidates
 
     def documents_for_entities(
         self, seeds: Sequence[tuple[str, int]], limit: int = 200

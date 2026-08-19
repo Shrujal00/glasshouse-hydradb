@@ -25,11 +25,15 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
-from typing import Iterable, Iterator
+from typing import TYPE_CHECKING, Iterable, Iterator
 
 import ollama
 
 from .config import ADJUDICATION_MODEL, get
+
+if TYPE_CHECKING:  # the renderer below is duck-typed, so this stays type-only
+    from .facets import DocumentFacets
+    from .trust import Arbitration
 
 # How much of each document reaches the model. The budget is spent on the
 # passages that match the question rather than on the opening characters:
@@ -38,12 +42,31 @@ from .config import ADJUDICATION_MODEL, get
 # dropped the answer and left behind similar-looking numbers that did not
 # answer anything.
 DOC_CHARS = 2600
-MAX_DOCS = 6
+# Six was the budget while retrieval had two entrances. With the container
+# scope there are three, and measured over 30 `metadata` questions the
+# documents it rescues land outside a six-document context every time: the
+# expected document reaches the context 8 times at six documents whether or not
+# the container entrance ran, 11 at eight, and 12 at ten against ten without
+# it. Ordering makes no difference at any budget -- the constraint is the
+# budget itself, so it is the budget that moves.
+MAX_DOCS = 10
 
 # The unit passages are scored and spent in. Wide enough that a matched term
 # arrives with the sentence it belongs to, narrow enough that several separate
 # regions of a long document fit inside one document's allowance.
 _PASSAGE_WINDOW = 520
+
+# Slices of the budget reserved for the two ends of a long document, before any
+# question matching is spent. The tail is the wider of the two because that is
+# where the structural facts are written down: google_drive files close with
+# "Last edited notes: - Draft created 2026-11-03 (Maya)", confluence with
+# "Revision history - 2025-11-10: Created by Ava Martinez", linear and jira
+# with a dated activity log. A question about who created a page shares its
+# words with the page's *head*, so window scoring spent the whole allowance up
+# there and dropped the answering line sitting at 98% depth -- which is how an
+# assignee named "Liam Chen" was lost from a document that stated him plainly.
+_HEAD_CHARS = 420
+_TAIL_CHARS = 560
 
 # The model is told to open with this exact token when the corpus comes up
 # short, so abstention is detectable in code rather than inferred from wording.
@@ -90,8 +113,45 @@ def _client() -> ollama.Client:
     )
 
 
+def _ends(body: str, *, head_chars: int, tail_chars: int) -> list[tuple[int, int]]:
+    """The reserved opening and closing spans, snapped to word boundaries.
+
+    Both are cut at whitespace so the head does not end and the tail does not
+    begin mid-word -- a half word reads as corruption, and the closing blocks
+    are exactly where a name we want cited lives.
+    """
+    spans: list[tuple[int, int]] = []
+    if head_chars > 0:
+        cut = body.rfind(" ", head_chars // 2, head_chars)
+        spans.append((0, cut if cut > 0 else min(head_chars, len(body))))
+    if tail_chars > 0:
+        begin = max(0, len(body) - tail_chars)
+        cut = body.find(" ", begin, begin + tail_chars // 2)
+        spans.append((cut + 1 if cut > 0 else begin, len(body)))
+    return spans
+
+
+def _render(body: str, spans: list[tuple[int, int]]) -> str:
+    """Stitch the chosen spans back together in document order.
+
+    Spans that touch or overlap are merged first: the head, the tail and a
+    matched window can land against each other in a document barely over
+    budget, and joining those with an ellipsis would show the reader a break
+    that is not there -- or repeat the same sentence twice.
+    """
+    merged: list[list[int]] = []
+    for begin, end in sorted(spans):
+        if merged and begin <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+            continue
+        merged.append([begin, end])
+    parts = [body[begin:end].strip() for begin, end in merged]
+    joined = " … ".join(part for part in parts if part)
+    return "… " + joined if merged and merged[0][0] > 0 else joined
+
+
 def select_passages(body: str, question: str, budget: int = DOC_CHARS) -> str:
-    """The parts of `body` that mention the question's own terms.
+    """The parts of `body` that mention the question's own terms, plus its ends.
 
     Ranked retrieval decides which documents are worth reading; this decides
     which part of one gets read. The document is scored in fixed windows and
@@ -101,10 +161,21 @@ def select_passages(body: str, question: str, budget: int = DOC_CHARS) -> str:
 
     Rare terms count for more than common ones. A pool identifier that appears
     twice locates the answer; the word "pool", appearing forty times, does not.
+
+    The first and last few hundred characters are taken before any of that, on
+    the measurement above `_HEAD_CHARS`: title and opening attribution at one
+    end, the revision or activity log at the other, and neither of them is
+    reliably reachable from the question's vocabulary.
     """
     body = body.strip()
     if len(body) <= budget:
         return body
+
+    tail_chars = min(_TAIL_CHARS, budget // 4)
+    reserved = _ends(body, head_chars=min(_HEAD_CHARS, budget // 5), tail_chars=tail_chars)
+    # No term to match on: spend everything the tail does not need on the head,
+    # rather than truncating and losing the closing block with it.
+    unmatched = _ends(body, head_chars=budget - tail_chars, tail_chars=tail_chars)
 
     terms = {t for t in re.findall(r"[a-z0-9][a-z0-9._/-]{2,}", question.lower())}
     terms -= _STOPWORDS
@@ -115,7 +186,7 @@ def select_passages(body: str, question: str, budget: int = DOC_CHARS) -> str:
         if seen:
             weights[term] = 1.0 / math.sqrt(seen)
     if not weights:
-        return body[:budget].strip()
+        return _render(body, unmatched)
 
     step = _PASSAGE_WINDOW // 2
     scored: list[tuple[float, int]] = []
@@ -125,11 +196,11 @@ def select_passages(body: str, question: str, budget: int = DOC_CHARS) -> str:
         if score:
             scored.append((score, begin))
     if not scored:
-        return body[:budget].strip()
+        return _render(body, unmatched)
 
     scored.sort(key=lambda pair: (-pair[0], pair[1]))
-    picked: list[tuple[int, int]] = []
-    spent = 0
+    picked: list[tuple[int, int]] = list(reserved)
+    spent = sum(end - begin for begin, end in picked)
     for _, begin in scored:
         end = min(len(body), begin + _PASSAGE_WINDOW)
         if any(begin < other_end and other_begin < end for other_begin, other_end in picked):
@@ -138,13 +209,114 @@ def select_passages(body: str, question: str, budget: int = DOC_CHARS) -> str:
             continue
         picked.append((begin, end))
         spent += end - begin
-    if not picked:
-        return body[:budget].strip()
+    return _render(body, picked)
 
-    picked.sort()
-    parts = [body[begin:end].strip() for begin, end in picked]
-    joined = " … ".join(parts)
-    return "… " + joined if picked[0][0] > 0 else joined
+
+# What a source calls the thing a document sits inside. The questions use the
+# source's own word -- "in the internal customer success and support knowledge
+# space", "what Slack channel hosts the discussion" -- and a card that answered
+# both with "folder" makes the model translate before it can match.
+_CONTAINER_LABEL = {
+    "confluence": "space",
+    "slack": "channel",
+    "google_drive": "drive folder",
+    "gmail": "mailbox folder",
+    "linear": "project",
+    "jira": "project",
+    "github": "repo area",
+    "fireflies": "folder",
+    "hubspot": "record group",
+}
+
+# Mail headers in the order a reader expects them. `attachments` is here
+# because "the filename of the attachment" is a benchmark question and the
+# filename appears nowhere else in the record.
+_HEADER_ORDER = ("from", "to", "cc", "subject", "attachments")
+
+_CARD_NOTE = (
+    "Some documents below carry a Metadata block. Those are the document's own "
+    "recorded fields, exactly as the source system stored them: which space, "
+    "channel, folder or project it lives in, its ticket key and dates, mail "
+    "from/to/subject, the people recorded as speaking on a call. They are part "
+    "of the document and may be quoted and cited like its text. They say where "
+    "a document lives and who is recorded on it — never who owns, approved or "
+    "decided anything."
+)
+
+
+def _row(label: str, value: str) -> str:
+    return f"  {label}: {value[:200].strip()}"
+
+
+def metadata_card(facets: "DocumentFacets | None") -> str:
+    """A document's structural fields, as a block the model can read and cite.
+
+    Every field here is already in `data/normalized/*.jsonl` and none of it has
+    ever reached the model: the FTS index stores title and body, and `source`,
+    `date` and `ticket_key` are UNINDEXED. The answers to 100 benchmark
+    questions live in these fields — the Slack channel that hosted a
+    discussion is in `channels` and nowhere in any sentence — and that category
+    scores zero.
+
+    Empty fields are dropped rather than printed blank. A card that is mostly
+    "(none)" teaches the model that missing metadata is normal and that the
+    filled-in lines are as unreliable as the blank ones.
+    """
+    if facets is None:
+        return ""
+
+    def field(name: str) -> str:
+        return str(getattr(facets, name, "") or "").strip()
+
+    def listed(name: str) -> list[str]:
+        return [str(v).strip() for v in (getattr(facets, name, ()) or ()) if str(v).strip()]
+
+    rows: list[str] = []
+    source = field("source")
+    if source:
+        rows.append(_row("source", source))
+
+    containers = listed("containers")
+    if containers:
+        label = _CONTAINER_LABEL.get(source, "folder")
+        if source == "slack":
+            containers = [c if c.startswith("#") else f"#{c}" for c in containers]
+        rows.append(_row(label if len(containers) == 1 else f"{label}s", ", ".join(containers[:4])))
+
+    if ticket := field("ticket_key"):
+        rows.append(_row("ticket", ticket))
+    if date := field("date"):
+        rows.append(_row("date", date))
+
+    headers = getattr(facets, "headers", None) or {}
+    # `date` is already its own row; anything the source recorded that we did
+    # not anticipate is still shown, because one of those is an attachment
+    # filename somewhere.
+    keys = [k for k in _HEADER_ORDER if headers.get(k)]
+    keys += sorted(k for k in headers if headers.get(k) and k not in _HEADER_ORDER and k != "date")
+    for key in keys:
+        rows.append(_row(key, str(headers[key])))
+
+    for name in ("speakers", "attendees"):
+        if people := listed(name):
+            rows.append(_row(name, ", ".join(people[:10])))
+
+    # Only when the mail headers did not already name them, or every gmail card
+    # prints the same addresses twice.
+    if not any(headers.get(k) for k in ("from", "to")):
+        pairs = [p for p in (getattr(facets, "participants", ()) or ()) if p and p[0]]
+        if pairs:
+            rows.append(_row(
+                "participants",
+                ", ".join(f"{n} <{e}>" if e else str(n) for n, e in pairs[:8]),
+            ))
+
+    if thread := field("thread_id"):
+        rows.append(_row("thread", thread))
+    if slug := field("slug"):
+        rows.append(_row("slug", slug))
+
+    return "Metadata:\n" + "\n".join(rows) if rows else ""
 
 
 def build_prompt(
@@ -153,12 +325,19 @@ def build_prompt(
     people: Iterable,
     paths: Iterable[dict] | None = None,
     connected: Iterable | None = None,
+    *,
+    facets: dict[str, "DocumentFacets"] | None = None,
+    arbitration: "Arbitration | None" = None,
 ) -> str:
     """Lay out the evidence, identities first, graph connections last.
 
     When `paths` is supplied the model sees the multi-hop connections
     HydraDB found between the people this question reached. A shared document
     establishes co-occurrence only, not collaboration, ownership, or agreement.
+
+    `facets` maps doc_id to that document's recorded metadata, which is printed
+    with the document it belongs to rather than in a block of its own -- a card
+    away from its text is a card the model cannot attribute or cite.
     """
     lines: list[str] = []
 
@@ -169,12 +348,25 @@ def build_prompt(
             lines.append(f"  {p.name} is also written as: {', '.join(sorted(p.surfaces))}")
         lines.append("")
 
+    cards = facets or {}
+    if cards:
+        lines.append(_CARD_NOTE)
+        lines.append("")
+
     lines.append("Documents:")
     for i, d in enumerate(list(docs)[:MAX_DOCS], start=1):
         body = select_passages(d.text or "", question, budget=DOC_CHARS)
         lines.append(f"\n[{i}] {d.source} — {d.title or d.doc_id}"
                      + (f" ({d.date})" if d.date else ""))
+        card = metadata_card(cards.get(d.doc_id))
+        if card:
+            lines.append(card)
         lines.append(body)
+
+    if arbitration is not None:
+        rendered = arbitration.render()
+        if rendered:
+            lines.append("\n" + rendered)
 
     everyone = list(connected or ())
     # Someone appearing across several of the retrieved documents is a
@@ -230,13 +422,19 @@ def _finish(text: str) -> Written:
 def write(
     question: str, docs, people, model: str | None = None, connected=None,
     paths: Iterable[dict] | None = None,
+    *,
+    facets: dict[str, "DocumentFacets"] | None = None,
+    arbitration: "Arbitration | None" = None,
 ) -> Written:
     """Answer in one shot."""
     response = _client().chat(
         model=model or ADJUDICATION_MODEL,
         messages=[
             {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": build_prompt(question, docs, people, paths=paths, connected=connected)},
+            {"role": "user", "content": build_prompt(
+                question, docs, people, paths=paths, connected=connected,
+                facets=facets, arbitration=arbitration,
+            )},
         ],
         options={"temperature": 0},
     )
@@ -246,6 +444,9 @@ def write(
 def write_streaming(
     question: str, docs, people, model: str | None = None, connected=None,
     paths: Iterable[dict] | None = None,
+    *,
+    facets: dict[str, "DocumentFacets"] | None = None,
+    arbitration: "Arbitration | None" = None,
 ) -> Iterator[dict]:
     """Answer token by token, so the interface can show it being written.
 
@@ -260,7 +461,10 @@ def write_streaming(
         model=model or ADJUDICATION_MODEL,
         messages=[
             {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": build_prompt(question, docs, people, paths=paths, connected=connected)},
+            {"role": "user", "content": build_prompt(
+                question, docs, people, paths=paths, connected=connected,
+                facets=facets, arbitration=arbitration,
+            )},
         ],
         options={"temperature": 0},
         stream=True,

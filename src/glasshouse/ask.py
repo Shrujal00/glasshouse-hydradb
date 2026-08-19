@@ -32,15 +32,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from . import answer
+from . import answer, claims as claim_extraction, trust
 from .config import STATE
 from .corpus import parse_document_text
+from .facets import FACETS, Container, DocumentFacets, FacetStore
+from .graph import node_id
 from .priors import Priors
 from .graph import EntityCandidate, GraphCandidate, GraphEngine
 from .recall import Candidate, LocalRecall
 
 LOOKUP = STATE / "ontology.sqlite3"
 PRIORS = STATE / "priors.json"
+
+# How much of the retrieval budget a named container may claim. A question that
+# names a folder is usually asking *about* that folder, but the container is a
+# scope, not an answer: keyword ranking still has to pick within it, and the
+# lexical pool has to survive a container that turned out to be the wrong one.
+CONTAINER_SCOPE_LIMIT = 400
 
 # How many people to draw. The canvas shows what the question touched, not the
 # corpus, and past roughly this many the picture stops being readable.
@@ -230,6 +238,13 @@ class RetrievalResult:
     graph_error: str | None = None
     connected_entities: list[EntityCandidate] = field(default_factory=list)
     connected_error: str | None = None
+    # The third entrance: the containers the question named, the documents they
+    # hold, and which of the two scopes actually produced them.
+    containers: list[Container] = field(default_factory=list)
+    container_docs: list[Candidate] = field(default_factory=list)
+    container_entrance: str | None = None
+    container_error: str | None = None
+    source_hint: str | None = None
 
 
 class Asker:
@@ -248,6 +263,34 @@ class Asker:
         self.priors = (
             Priors.from_dict(json.loads(PRIORS.read_text())) if PRIORS.exists() else Priors()
         )
+        self._facets_path = FACETS
+
+    @property
+    def facets(self) -> FacetStore | None:
+        """This thread's facet store, or None while it has not been built.
+
+        Thread-local for the same reason `lookup` is: one process-wide SQLite
+        connection on FastAPI's threadpool raises "SQLite objects created in a
+        thread can only be used in that same thread" intermittently.
+
+        Absent rather than fatal. The store is an addition to retrieval and
+        synthesis, not a dependency of either, so a deployment that has not run
+        `scripts/build_facets.py` answers exactly as it did before rather than
+        refusing to answer at all.
+        """
+        path = getattr(self, "_facets_path", FACETS)
+        if not path.exists():
+            return None
+        local = self.__dict__.setdefault("_local", threading.local())
+        store = getattr(local, "facets", None)
+        if store is None:
+            try:
+                store = FacetStore(path)
+                store.conn  # opened here so a corrupt file fails here, not mid-question
+            except Exception:
+                return None
+            local.facets = store
+        return store
 
     @property
     def lookup(self) -> sqlite3.Connection:
@@ -476,9 +519,72 @@ class Asker:
         graph_docs = self.recall.search_scoped(
             question, [candidate.doc_id for candidate in graph_candidates], limit=limit, drop=asked_as
         )
+        # The third entrance. A question like "in the internal customer success
+        # and support knowledge space" names no person and no keyword the body
+        # is likely to repeat -- it names a *place*. Folders and channels are
+        # that place. `containers_named` is deliberately hard to satisfy: one
+        # ordinary word is never enough, because `engineering` is 21,841
+        # documents and scoping to it is the same as not scoping at all.
+        store = self.facets
+        containers: list[Container] = []
+        container_docs: list[Candidate] = []
+        container_entrance = None
+        container_error = None
+        source_hint = None
+        if store is not None:
+            try:
+                source_hint = store.source_hint(question)
+                containers = store.containers_named(question)
+                if source_hint:
+                    # Container names repeat across sources -- a Slack channel,
+                    # a Drive folder and a Confluence space all called
+                    # `security-review` -- so a question that said which source
+                    # it meant has already ruled the other two out. Measured on
+                    # 30 metadata questions: without this the entrance fired on
+                    # 18 and spent most of its scope on channels belonging to a
+                    # source the question had excluded.
+                    kept = [c for c in containers if c.source == source_hint]
+                    # An empty result means the match was in the wrong source
+                    # entirely, which is a miss, not a reason to fall back to
+                    # it: the fallback is ordinary keyword retrieval, and it is
+                    # still running.
+                    containers = kept
+            except Exception as exc:
+                container_error = f"{type(exc).__name__}: {str(exc)[:160]}"
+        if containers:
+            scope: list[str] = []
+            try:
+                # HydraDB first, so the container hop is a graph hop when the
+                # graph holds it. `documents_in_containers` fails soft while
+                # `scripts/load_facet_graph.py` has not run, and the local
+                # store below serves the identical scope in the meantime --
+                # the trace records which of the two answered.
+                reached = self.engine.documents_in_containers(
+                    [(c.key, node_id(f"container:{c.key}")) for c in containers],
+                    CONTAINER_SCOPE_LIMIT,
+                )
+                scope = [candidate.doc_id for candidate in reached]
+                container_entrance = "hydradb" if scope else None
+            except Exception as exc:
+                container_error = f"{type(exc).__name__}: {str(exc)[:160]}"
+            if not scope and store is not None:
+                try:
+                    scope = store.documents_in(
+                        [c.key for c in containers], CONTAINER_SCOPE_LIMIT
+                    )
+                    container_entrance = "facets" if scope else None
+                except Exception as exc:
+                    container_error = f"{type(exc).__name__}: {str(exc)[:160]}"
+            if scope:
+                container_docs = self.recall.search_scoped(
+                    question, scope, limit=limit, drop=asked_as
+                )
+
         final_docs = list(identity_docs)
         known = {doc.doc_id for doc in final_docs}
         final_docs.extend(doc for doc in graph_docs if doc.doc_id not in known)
+        known.update(doc.doc_id for doc in graph_docs)
+        final_docs.extend(doc for doc in container_docs if doc.doc_id not in known)
 
         # The other way into the graph. Seeding from people named in the
         # question opens for 21 of 570 benchmark questions and never for "who
@@ -507,15 +613,31 @@ class Asker:
             graph_error=graph_error,
             connected_entities=connected,
             connected_error=connected_error,
+            containers=containers,
+            container_docs=container_docs,
+            container_entrance=container_entrance,
+            container_error=container_error,
+            source_hint=source_hint,
         )
 
     @staticmethod
     def _answer_documents(retrieval: RetrievalResult, limit: int) -> list[Candidate]:
-        """Balance both ranked strategies in the bounded synthesis context."""
+        """Balance the ranked strategies in the bounded synthesis context.
+
+        Round-robin rather than concatenation, and the container scope goes
+        first when it fired. Half the failing `metadata` questions never
+        retrieved their document at all; the ones the container scope rescues
+        are precisely the ones keyword ranking put outside the top twenty, so
+        appending them behind two full keyword lists would retrieve them and
+        then crowd them straight back out of the six-document context.
+        """
+        strategies = [retrieval.identity_docs, retrieval.graph_docs]
+        if retrieval.container_docs:
+            strategies.insert(0, retrieval.container_docs)
         documents: list[Candidate] = []
         seen: set[str] = set()
-        for rank in range(max(len(retrieval.identity_docs), len(retrieval.graph_docs))):
-            for strategy in (retrieval.identity_docs, retrieval.graph_docs):
+        for rank in range(max((len(s) for s in strategies), default=0)):
+            for strategy in strategies:
                 if rank >= len(strategy) or strategy[rank].doc_id in seen:
                     continue
                 documents.append(strategy[rank])
@@ -523,6 +645,38 @@ class Asker:
                 if len(documents) >= limit:
                     return documents
         return documents
+
+    # --- claims --------------------------------------------------------------
+
+    def adjudicate(self, question: str, docs: list[Candidate]) -> trust.Arbitration:
+        """Extract the claims the evidence states, then arbitrate between them.
+
+        Retrieval is not the bottleneck for `conflicting_info`: plain FTS puts
+        the expected document in the context on 10 of 10 of those questions.
+        The model still scores about half, because it can see two competing
+        values and has no basis for preferring one. This gives it one --
+        recency, source authority, explicitness, corroboration -- and, when the
+        margin is too thin to justify a choice, tells it to report both rather
+        than invent a winner.
+
+        Never raises: both halves degrade to no claims, and no claims is the
+        behaviour that exists today.
+        """
+        try:
+            found = claim_extraction.extract(docs, question)
+            return trust.arbitrate(found)
+        except Exception:
+            return trust.Arbitration(claims=(), conflicts=())
+
+    def _facets_for(self, docs: list[Candidate]) -> dict[str, DocumentFacets]:
+        """The recorded metadata for the documents synthesis will read."""
+        store = self.facets
+        if store is None or not docs:
+            return {}
+        try:
+            return store.facets_for([doc.doc_id for doc in docs])
+        except Exception:
+            return {}
 
     def connect(self, question: str, people: list[Person], docs: list[Candidate]) -> list[dict]:
         """Render verified pairwise paths between entities named in the query.
@@ -586,6 +740,19 @@ class Asker:
             }
 
         docs = self._answer_documents(retrieval, limit)
+
+        # Claim extraction is a model call, so it starts now and is collected
+        # just before composing. The graph steps below take roughly as long,
+        # and running the two in sequence would have shown the reader a stall.
+        adjudged: dict[str, trust.Arbitration] = {}
+
+        def adjudicating() -> None:
+            adjudged["result"] = self.adjudicate(question, docs[: answer.MAX_DOCS])
+
+        arbiter = threading.Thread(target=adjudicating, daemon=True)
+        arbiter.start()
+
+        facets = self._facets_for(docs[: answer.MAX_DOCS])
         yield {
             "type": "recall",
             "documents": len(docs),
@@ -597,6 +764,24 @@ class Asker:
             ),
             "ms": round((time.time() - t0) * 1000),
         }
+        if retrieval.containers:
+            yield {
+                "type": "containers",
+                "named": [
+                    {"key": c.key, "kind": c.kind, "source": c.source,
+                     "documents": c.documents}
+                    for c in retrieval.containers
+                ],
+                # Which scope answered, so the trace does not imply a graph hop
+                # that the local table actually served.
+                "entrance": retrieval.container_entrance,
+                "documents": len(retrieval.container_docs),
+                "only": len(
+                    {doc.doc_id for doc in retrieval.container_docs}
+                    - {doc.doc_id for doc in retrieval.plain_docs}
+                ),
+                "available": retrieval.container_error is None,
+            }
         yield {
             "type": "graph_scope",
             "entities": [person.eid for person in retrieval.named_entities],
@@ -732,13 +917,45 @@ class Asker:
         for path in paths:
             yield {"type": "path", **path}
 
+        arbiter.join(timeout=60)
+        arbitration = adjudged.get("result") or trust.Arbitration(claims=(), conflicts=())
+        for conflict in arbitration.conflicts:
+            yield {
+                "type": "conflict_found",
+                "subject": conflict.subject,
+                "predicate": conflict.predicate,
+                "values": [
+                    {"value": c.object_value, "source": c.source,
+                     "date": c.asserted_at, "cite": c.doc_id, "trust": c.trust}
+                    for c in (conflict.winner, *conflict.losers)
+                ],
+            }
+            yield {
+                "type": "winner_chosen",
+                "subject": conflict.subject,
+                "predicate": conflict.predicate,
+                # `decided` is false when the margin was too thin to justify a
+                # choice. That is a result, not a failure, and the interface
+                # must not draw it as a verdict.
+                "decided": conflict.decided,
+                "value": conflict.winner.object_value if conflict.decided else None,
+                "source": conflict.winner.source,
+                "why": conflict.rationale,
+                "rejected": [
+                    {"value": loser.object_value, "source": loser.source,
+                     "status": loser.status}
+                    for loser in conflict.losers
+                ],
+            }
+
         # Now compose the answer, with graph evidence included.
         written: queue.Queue = queue.Queue()
 
         def compose() -> None:
             try:
                 for part in answer.write_streaming(question, docs, people, paths=paths,
-                                                connected=retrieval.connected_entities):
+                                                connected=retrieval.connected_entities,
+                                                facets=facets, arbitration=arbitration):
                     written.put(part)
             except Exception as exc:
                 written.put({"error": f"{type(exc).__name__}: {exc}"})
@@ -778,6 +995,8 @@ class Asker:
             "people": len(people),
             "documents": len(docs),
             "paths": len(paths),
+            "claims": len(arbitration.claims),
+            "conflicts": len(arbitration.conflicts),
             "ms": round((time.time() - t0) * 1000),
         }
 
@@ -787,6 +1006,8 @@ class Asker:
 
         retrieval = self.retrieve(question, limit)
         docs = self._answer_documents(retrieval, limit)
+        facets = self._facets_for(docs[: answer.MAX_DOCS])
+        arbitration = self.adjudicate(question, docs[: answer.MAX_DOCS])
         events.append(
             Event(
                 "recall",
@@ -796,6 +1017,31 @@ class Asker:
                 },
             )
         )
+        if retrieval.containers:
+            events.append(
+                Event(
+                    "containers",
+                    {
+                        "named": len(retrieval.containers),
+                        "entrance": retrieval.container_entrance,
+                        "documents": len(retrieval.container_docs),
+                        "available": retrieval.container_error is None,
+                    },
+                )
+            )
+        if arbitration.claims:
+            events.append(
+                Event(
+                    "claims",
+                    {
+                        "extracted": len(arbitration.claims),
+                        "conflicts": len(arbitration.conflicts),
+                        "decided": sum(
+                            1 for c in arbitration.conflicts if c.decided
+                        ),
+                    },
+                )
+            )
         events.append(
             Event(
                 "graph_scope",
@@ -888,7 +1134,8 @@ class Asker:
         if not abstained:
             try:
                 written = answer.write(question, docs, people, paths=paths,
-                              connected=retrieval.connected_entities)
+                              connected=retrieval.connected_entities,
+                              facets=facets, arbitration=arbitration)
                 text = written.text
                 cited = written.cited
                 if written.abstained:

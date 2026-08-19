@@ -109,6 +109,16 @@ sees*, so arbitration can never hand the model a value it cannot find in its own
 evidence. Competing values are then scored on source authority, recency,
 explicitness and corroboration.
 
+Recency is one of those signals, and it nearly didn't work. Only Gmail and
+Fireflies record a `date` field; the other seven sources set one on under 2% of
+their documents — every Jira ticket, every Linear issue and all 285,605 Slack
+messages arrived at the adjudicator undated, so a later correction and the
+earlier report it corrected were indistinguishable. Linear, Jira, HubSpot and
+Confluence write their dates into the body instead, as activity logs and
+revision histories, so `derive_date` takes the latest one found there. Date
+coverage went from **26% to 51%** of the corpus, and from 0% to ~97% on exactly
+the ticket and CRM documents where `status` and `owner` claims live.
+
 **The important part is that it is allowed to refuse.** When the margin between
 two values is too thin, it says so and hands both to the model:
 

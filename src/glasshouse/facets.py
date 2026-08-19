@@ -598,6 +598,81 @@ class FacetStore:
         return hits[0] if len(hits) == 1 else None
 
 
+# --- reranking ---------------------------------------------------------------
+
+# The header fields that identify a document rather than describe it. `cc` is
+# left out: a long copy list adds tokens without adding aboutness, and it
+# dilutes the overlap fraction that does the ranking.
+_RERANK_HEADERS = ("from", "to", "subject", "attachments")
+
+# How much a full metadata match is worth against a perfect BM25 score.
+# Measured over 30 `metadata` questions against a 500-document page: the
+# expected document reaches the top 20 twelve times unweighted, fifteen at 0.5,
+# and seventeen from 1.0 upwards, where it plateaus -- so this is the low end of
+# the flat region rather than a tuned peak, and BM25 still breaks ties among
+# documents whose metadata matches equally.
+RERANK_WEIGHT = 1.0
+
+
+def facet_tokens(facets: DocumentFacets) -> set[str]:
+    """Every stemmed content token a document's recorded metadata contributes."""
+    parts: list[str] = [facets.slug, facets.title, facets.ticket_key]
+    parts.extend(facets.containers)
+    parts.extend(facets.speakers)
+    parts.extend(facets.attendees)
+    parts.extend(facets.headers.get(field, "") for field in _RERANK_HEADERS)
+    tokens: set[str] = set()
+    for part in parts:
+        if part:
+            tokens.update(_stem(word) for word in _content_tokens(str(part)))
+    return tokens
+
+
+def rerank(
+    question: str,
+    candidates: Sequence,
+    facets: dict[str, DocumentFacets],
+    *,
+    weight: float = RERANK_WEIGHT,
+    limit: int | None = None,
+) -> list:
+    """Reorder a deep page by how much of the question the metadata accounts for.
+
+    BM25 ranks on the prose, and a `metadata` question is largely not about the
+    prose: "which published page in the customer success and support space"
+    shares almost no vocabulary with the page's body and shares nearly all of it
+    with the page's filing details. Measured over 30 such questions, the
+    expected document sits past rank 20 but inside rank 500 eight times -- found
+    by the search and then discarded by the ranking. This is what pulls those
+    back.
+
+    Scores are normalised against the best BM25 score in the page rather than
+    used raw, so the blend means the same thing whether the question matched
+    thousands of documents strongly or a handful weakly.
+    """
+    ordered = list(candidates)
+    if not ordered:
+        return []
+    asked = {_stem(word) for word in _content_tokens(question)}
+    if not asked:
+        return ordered[:limit] if limit else ordered
+    best = max((getattr(c, "score", 0.0) for c in ordered), default=0.0) or 1.0
+    scored = []
+    for position, candidate in enumerate(ordered):
+        recorded = facets.get(getattr(candidate, "doc_id", ""))
+        overlap = (
+            len(asked & facet_tokens(recorded)) / len(asked) if recorded else 0.0
+        )
+        # `position` keeps the sort total and stable: two documents with equal
+        # blended scores keep the order the index gave them.
+        scored.append(
+            (getattr(candidate, "score", 0.0) / best + weight * overlap, -position, candidate)
+        )
+    scored.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    ranked = [row[2] for row in scored]
+    return ranked[:limit] if limit else ranked
+
+
 # --- normalized records ------------------------------------------------------
 
 

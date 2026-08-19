@@ -35,7 +35,7 @@ from typing import Any, Iterable, Sequence
 from . import answer, claims as claim_extraction, trust
 from .config import STATE
 from .corpus import parse_document_text
-from .facets import FACETS, Container, DocumentFacets, FacetStore
+from .facets import FACETS, Container, DocumentFacets, FacetStore, rerank
 from .graph import node_id
 from .priors import Priors
 from .graph import EntityCandidate, GraphCandidate, GraphEngine
@@ -49,6 +49,13 @@ PRIORS = STATE / "priors.json"
 # scope, not an answer: keyword ranking still has to pick within it, and the
 # lexical pool has to survive a container that turned out to be the wrong one.
 CONTAINER_SCOPE_LIMIT = 400
+
+# How deep to read before reranking. Measured over 30 `metadata` questions, the
+# expected document reaches the top 20 twelve times on BM25 alone, fifteen when
+# a 200-document page is rescored against the recorded metadata, and seventeen
+# from a 500-document page. Reading deeper than the answer needs costs one
+# indexed facet lookup over the page and nothing else.
+DEEP_PAGE = 500
 
 # How many people to draw. The canvas shows what the question touched, not the
 # corpus, and past roughly this many the picture stops being readable.
@@ -500,9 +507,9 @@ class Asker:
             expansion.extend(self.surfaces_of(person))
             asked_as.extend(person.surfaces)
 
-        plain_docs = self.recall.search(question, limit=limit)
+        plain_docs = self.lexical(question, limit)
         identity_docs = (
-            self.recall.search(question, limit=limit, also=expansion, drop=asked_as)
+            self.lexical(question, limit, also=expansion, drop=asked_as)
             if expansion
             else plain_docs
         )
@@ -667,6 +674,26 @@ class Asker:
             return trust.arbitrate(found)
         except Exception:
             return trust.Arbitration(claims=(), conflicts=())
+
+    def lexical(
+        self, question: str, limit: int, also: Sequence[str] = (), drop: Sequence[str] = ()
+    ) -> list[Candidate]:
+        """Keyword retrieval, reranked against what the documents record.
+
+        Reads `DEEP_PAGE` documents and returns `limit`. With no facet store
+        this is exactly `recall.search` at `limit`, which is what it was before
+        the store existed.
+        """
+        store = self.facets
+        depth = max(limit, DEEP_PAGE) if store is not None else limit
+        found = self.recall.search(question, limit=depth, also=also, drop=drop)
+        if store is None or not found:
+            return found[:limit]
+        try:
+            recorded = store.facets_for([doc.doc_id for doc in found])
+        except Exception:
+            return found[:limit]
+        return rerank(question, found, recorded, limit=limit)
 
     def _facets_for(self, docs: list[Candidate]) -> dict[str, DocumentFacets]:
         """The recorded metadata for the documents synthesis will read."""
@@ -1124,25 +1151,32 @@ class Asker:
 
         abstained = None
         if not people:
-            # Documents matched, but nobody in them resolves to a known
-            # identity — so we can point at the material without pretending to
-            # know who it concerns.
-            abstained = "matching documents exist, but no known person resolves within them"
+            # Worth recording, never worth refusing over. This used to skip
+            # synthesis outright, on the reasoning that we should not discuss
+            # material whose people we cannot name -- but most questions are
+            # not about people at all, and the ones that are usually have the
+            # person as the *answer*: "who authored the SLO throttler PR" names
+            # nobody, resolves nobody, and was answered with an empty string
+            # while the correct document sat in the context. `stream` never had
+            # this gate, so the interface answered questions the graded path
+            # silently declined. Rule 2 of the prompt already handles evidence
+            # that does not contain the answer, and it handles it per question
+            # rather than for a whole class of them.
+            events.append(Event("no_identity", {"documents": len(docs)}))
 
         text = ""
         cited: list[int] = []
-        if not abstained:
-            try:
-                written = answer.write(question, docs, people, paths=paths,
-                              connected=retrieval.connected_entities,
-                              facets=facets, arbitration=arbitration)
-                text = written.text
-                cited = written.cited
-                if written.abstained:
-                    abstained = written.text or "the retrieved documents do not contain the answer"
-            except Exception as exc:
-                events.append(Event("answer_degraded", {"detail": type(exc).__name__}))
-                abstained = f"answer synthesis failed ({type(exc).__name__})"
+        try:
+            written = answer.write(question, docs, people, paths=paths,
+                          connected=retrieval.connected_entities,
+                          facets=facets, arbitration=arbitration)
+            text = written.text
+            cited = written.cited
+            if written.abstained:
+                abstained = written.text or "the retrieved documents do not contain the answer"
+        except Exception as exc:
+            events.append(Event("answer_degraded", {"detail": type(exc).__name__}))
+            abstained = f"answer synthesis failed ({type(exc).__name__})"
 
         return Answer(
             question=question,

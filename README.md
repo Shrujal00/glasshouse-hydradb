@@ -92,11 +92,44 @@ past the engine's 30s cap. `SSpaths` returns 200 paths in 0.04–0.27s.
 ### What is in HydraDB
 
 ```
-(:Entity  {eid, name})-[:MENTIONED_IN]->(:Document {doc_id, title})
+(:Surface {text, kinds, entities, given_name_forms})-[:DENOTES]->(:Entity)
+(:Alias    {surface, kind})-[:RESOLVES_TO {score, signals}]->(:Entity)
+(:Entity   {eid, name})-[:MENTIONED_IN]->(:Document {doc_id, title})
 (:Document)-[:IN_CONTAINER]->(:Container {key, source, kind, name, documents})
 (:Entity)-[:SPOKE_IN]->(:Document)     -- who talked, not who was mentioned
 (:Entity)-[:SENT]->(:Document)         -- mail authorship
 ```
+
+### Identity resolution is a traversal
+
+The brief calls entity resolution the hard part, so it runs in the graph rather
+than beside it. A word taken out of a question anchors a `Surface` node by the
+deterministic digest of its text, and one `DENOTES` hop reaches every person
+that written form could mean:
+
+```
+MATCH (s:Surface {id: <digest of "jordan reyes">})-[:DENOTES]->(e:Entity)
+RETURN s.entities, s.kinds, e.eid, e.canonical_name, e.alias_count
+```
+
+**How many people it reaches is the ambiguity guard.** A form denoting two
+people has named neither, and refusing to expand it is the same discipline as
+refusing to answer from evidence that is not there.
+
+The engine shapes this design rather than merely tolerating it. It rejects
+unanchored scans — `MATCH (n:Entity) RETURN count(*)` over 166,429 entities
+times out, and over `Document` returns `429` — and it will not accept the
+traversal under `UNWIND`, so there is no batched form. Everything a scan would
+have computed is therefore counted once at load time and carried on the node:
+`entities` for ambiguity, `given_name_forms` for whether a bare capitalised
+word is a name, `kinds` for whether one spelling was used as both a handle and
+a name. Query time reads only the node it anchored on.
+
+The cost is real and worth stating: resolution went from a microsecond SQLite
+lookup to ~0.09s per word with no batching. Retrieval is ~1.9s cold and ~0.5s
+once the per-process memo is warm, and the number of surfaces resolved out of
+the retrieved documents is capped at 48 because the canvas draws eight people
+and resolving three hundred to show eight was waste.
 
 978,512 `IN_CONTAINER` edges, 159,374 `SENT`, 33,775 `SPOKE_IN`, across 57,765
 containers — loaded at ~61,000 items/min.

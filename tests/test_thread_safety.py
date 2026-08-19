@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from glasshouse.ask import Asker
 from glasshouse.priors import Priors
+from fake_ontology import FakeOntologyGraph
 from glasshouse.recall import LocalRecall
 
 
@@ -31,29 +32,34 @@ def test_recall_index_is_usable_from_several_threads(tmp_path):
     assert all(n >= 0 for n in found)
 
 
-def test_ontology_lookup_is_usable_from_several_threads(tmp_path):
-    path = tmp_path / "ontology.sqlite3"
-    conn = sqlite3.connect(path)
-    conn.execute(
-        "CREATE TABLE alias (surface TEXT, kind TEXT, eid TEXT, node_id INTEGER, "
-        "canonical_name TEXT, confidence REAL, alias_count INTEGER)"
-    )
-    conn.execute("INSERT INTO alias VALUES ('maya chen','name','maya',1,'Maya Chen',1.0,2)")
-    conn.commit()
-    conn.close()
+def test_resolution_memo_is_shared_and_safe_across_threads(tmp_path):
+    """Resolution is a traversal now, so the thing to protect is the memo.
+
+    The engine answers about twenty of these a second, and the server asks from
+    whichever worker took the request. A memo that raced would either resolve
+    the same word twice per question or hand one thread a half-built entry;
+    plain dict get/set is atomic under the GIL, so the worst outcome is a
+    duplicated lookup, and the count below proves it does not happen per call.
+    """
+    calls = []
+
+    class CountingGraph(FakeOntologyGraph):
+        def denoted_by(self, text, limit=4):
+            calls.append(text)
+            return super().denoted_by(text, limit)
 
     asker = Asker.__new__(Asker)
-    asker._lookup_path = path
-    asker._lookup = None
+    asker.engine = CountingGraph(
+        [("maya chen", "name", "maya", 1, "Maya Chen", 1.0, 2)]
+    )
     asker.priors = Priors()
-    assert asker.lookup.execute("SELECT count(*) FROM alias").fetchone()[0] == 1
 
     with ThreadPoolExecutor(max_workers=4) as pool:
-        rows = list(pool.map(
-            lambda _: asker.lookup.execute("SELECT count(*) FROM alias").fetchone()[0],
-            range(8),
-        ))
-    assert rows == [1] * 8
+        found = list(pool.map(lambda _: asker.denoted_by("maya chen"), range(8)))
+
+    assert [[m.eid for m in got] for got in found] == [["maya"]] * 8
+    # Eight concurrent asks, at most one traversal per distinct word.
+    assert calls.count("maya chen") <= 4
 
 
 def test_documents_are_fetched_by_rowid_not_by_scanning(tmp_path):

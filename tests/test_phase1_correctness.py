@@ -8,19 +8,14 @@ import pytest
 from glasshouse import answer, server
 from glasshouse.ask import Asker, Person, document_mentions
 from glasshouse.priors import Priors
+from glasshouse.graph import node_id
+from fake_ontology import FakeOntologyGraph
 from glasshouse.recall import Candidate
 
 
 def make_asker(tmp_path, aliases, functional=()):
-    conn = sqlite3.connect(tmp_path / "ontology.sqlite3")
-    conn.row_factory = sqlite3.Row
-    conn.execute(
-        "CREATE TABLE alias (surface TEXT, kind TEXT, eid TEXT, node_id INTEGER, "
-        "canonical_name TEXT, confidence REAL, alias_count INTEGER)"
-    )
-    conn.executemany("INSERT INTO alias VALUES (?, ?, ?, ?, ?, ?, ?)", aliases)
     asker = Asker.__new__(Asker)
-    asker._lookup = conn
+    asker.engine = FakeOntologyGraph(aliases)
     asker.priors = Priors(functional=frozenset(functional))
     return asker
 
@@ -100,19 +95,28 @@ def test_streaming_hides_only_a_confirmed_abstention_marker(monkeypatch, chunks,
     assert "".join(event["chunk"] for event in events if "chunk" in event) == expected
 
 
-def test_entity_endpoint_uses_integer_lookup_id_and_404s_unknown(monkeypatch, tmp_path):
-    asker = make_asker(
-        tmp_path,
-        [("Maya Chen", "name", "maya", 42, "Maya Chen", 1.0, 2)],
-    )
+def test_entity_endpoint_anchors_on_the_derived_node_id_and_404s_unknown(monkeypatch, tmp_path):
+    """No lookup table: the node id is computed from the eid.
+
+    404 therefore means the graph resolved nothing to that person, which is the
+    same answer as the person not existing.
+    """
+    asker = make_asker(tmp_path, [("Maya Chen", "name", "maya", 42, "Maya Chen", 1.0, 2)])
     calls = []
-    asker.engine = SimpleNamespace(
-        query=lambda query, parameters, strong: calls.append(parameters) or []
-    )
+    found = [SimpleNamespace(values={"surface": "maya chen", "kind": "name"})]
+
+    def query(query, parameters, strong):
+        calls.append(parameters)
+        return found if parameters["id"] == node_id("entity:maya") else []
+
+    asker.engine = SimpleNamespace(query=query)
     monkeypatch.setattr(server, "asker", lambda: asker)
 
-    assert server.entity("maya") == {"eid": "maya", "aliases": []}
-    assert calls == [{"id": 42}]
+    assert server.entity("maya") == {
+        "eid": "maya",
+        "aliases": [{"surface": "maya chen", "kind": "name"}],
+    }
+    assert calls == [{"id": node_id("entity:maya")}]
     with pytest.raises(server.HTTPException) as exc:
         server.entity("missing")
     assert exc.value.status_code == 404

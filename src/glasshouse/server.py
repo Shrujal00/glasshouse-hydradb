@@ -18,6 +18,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from .ask import Asker
+from .graph import node_id
 from .config import STATE
 
 WEB = Path(__file__).parent / "web"
@@ -84,16 +85,18 @@ def entity(eid: str) -> dict:
     between a stored result and a queryable one.
     """
     current = asker()
-    match = current.lookup.execute(
-        "SELECT DISTINCT node_id FROM alias WHERE eid = ? LIMIT 2", (eid,)
-    ).fetchall()
-    if len(match) != 1:
-        raise HTTPException(status_code=404, detail="entity not found")
+    # The node id is derived from the eid rather than looked up: ids here are a
+    # deterministic digest of a stable key, so the address of a person is
+    # computable and a table mapping one to the other has nothing to add.
     rows = current.engine.query(
         "MATCH (a:Alias)-[r:RESOLVES_TO]->(e:Entity {id: $id}) "
         "RETURN a.surface AS surface, a.kind AS kind, a.occurrences AS occurrences, "
         "r.score AS score, r.signals AS signals ORDER BY occurrences DESC",
-        {"id": int(match[0]["node_id"])},
+        {"id": node_id(f"entity:{eid}")},
         strong=True,
     )
+    # An entity nothing resolves to is one the ontology never built, which is
+    # the same answer as one that does not exist.
+    if not rows:
+        raise HTTPException(status_code=404, detail="entity not found")
     return {"eid": eid, "aliases": [r.values for r in rows]}

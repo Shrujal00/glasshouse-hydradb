@@ -5,18 +5,21 @@ watched rather than merely trusted:
 
     recall     half a million documents -> ~20 candidates      (local, ~50ms)
     identify   the identity surfaces those documents contain
-    resolve    surfaces -> canonical people, via the ontology  (~1ms)
-    graph      retrieve direct document neighbors from the offline HydraDB graph
+    resolve    surfaces -> canonical people, by traversal in HydraDB
+    graph      three entrances into the graph, run independently
     answer     cited answer, or an honest account of what is missing
 
-Documents and entity links are loaded offline. Query-time code only reads that
-graph, so HydraDB can add evidence that lexical retrieval never reached.
+Resolution is a graph traversal. A word from the question anchors a `Surface`
+node by its deterministic id, one `DENOTES` hop reaches every person that form
+could mean, and *how many it reaches* is the ambiguity guard -- a form that
+denotes two people has named neither.
 
-What resolution *cannot* be done locally is the ambiguity check. Whether
-`@priya` names one person depends on how many Priyas exist across all 500k
-documents, not on the twenty in front of us — so that knowledge comes from the
-prebuilt ontology lookup, which is small, and is why resolution stays a
-microsecond operation instead of a corpus scan.
+The ambiguity check is the part that cannot be done from the twenty documents
+in front of us: whether `@priya` names one person depends on all 500k. That
+knowledge is counted once when the graph is loaded and carried on the Surface
+node, so the check stays a single anchored hop rather than a corpus scan. The
+engine rejects unanchored scans outright, which is what forces the design and,
+having forced it, is what makes it fast.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ import sqlite3
 import threading
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -38,10 +42,9 @@ from .corpus import parse_document_text
 from .facets import FACETS, Container, DocumentFacets, FacetStore, rerank
 from .graph import node_id
 from .priors import Priors
-from .graph import EntityCandidate, GraphCandidate, GraphEngine
+from .graph import EntityCandidate, GraphCandidate, GraphEngine, SurfaceMatch
 from .recall import Candidate, LocalRecall
 
-LOOKUP = STATE / "ontology.sqlite3"
 PRIORS = STATE / "priors.json"
 
 # How much of the retrieval budget a named container may claim. A question that
@@ -62,6 +65,13 @@ DEEP_PAGE = 500
 TOP_PEOPLE = 8
 GRAPH_SCOPE_LIMIT = 200
 GRAPH_SEED_LIMIT = 8
+
+# How many distinct surfaces from the retrieved documents to resolve. Identity
+# resolution is a graph traversal at roughly 0.09s each and the engine has no
+# batched form, so this is the difference between a bounded second and an
+# unbounded ten. `TOP_PEOPLE` is 8; resolving 300 surfaces to draw 8 was waste.
+RESOLVE_BUDGET = 48
+RESOLVE_WORKERS = 8
 
 # Generic role vocabulary supplements the corpus-learned functional-mailbox
 # prior when an ontology alias spells out the role rather than its mailbox.
@@ -260,8 +270,6 @@ class Asker:
     def __init__(self, engine: GraphEngine | None = None) -> None:
         self.recall = LocalRecall()
         self.engine = engine or GraphEngine()
-        self._lookup: sqlite3.Connection | None = None
-        self._lookup_path = LOOKUP
         self._local = threading.local()
         # The same learned priors the resolver used. Needed here because a
         # department is a department wherever its name appears: `procurement`
@@ -271,6 +279,14 @@ class Asker:
             Priors.from_dict(json.loads(PRIORS.read_text())) if PRIORS.exists() else Priors()
         )
         self._facets_path = FACETS
+        # Resolution is a graph traversal now, and the engine answers about
+        # twenty of them a second. A question probes the same word from several
+        # phrase lengths and `resolve` asks again for the surfaces retrieval
+        # found, so the same form is looked up repeatedly within one question
+        # and across a session. Memoised per Asker; a stale entry would need
+        # the ontology to be reloaded underneath a running server.
+        self._denoted: dict[str, list[SurfaceMatch]] = {}
+        self._forms: dict[int, list[tuple[str, str]]] = {}
 
     @property
     def facets(self) -> FacetStore | None:
@@ -299,25 +315,6 @@ class Asker:
             local.facets = store
         return store
 
-    @property
-    def lookup(self) -> sqlite3.Connection:
-        """This thread's ontology connection; see `LocalRecall.conn`.
-
-        `_lookup` stays honoured so a caller can inject an open connection.
-        """
-        if self._lookup is not None:
-            return self._lookup
-        local = self.__dict__.setdefault("_local", threading.local())
-        conn = getattr(local, "lookup", None)
-        if conn is None:
-            path = getattr(self, "_lookup_path", LOOKUP)
-            if not path.exists():
-                raise RuntimeError("no ontology lookup; run scripts/load_graph.py first")
-            conn = sqlite3.connect(path)
-            conn.row_factory = sqlite3.Row
-            local.lookup = conn
-        return conn
-
     # --- steps ---------------------------------------------------------------
 
     def identify(self, docs: Iterable[Candidate]) -> Counter:
@@ -333,31 +330,92 @@ class Asker:
                 surfaces[("handle", value.lower())] += 1
         return surfaces
 
+    def denoted_by(self, text: str) -> list[SurfaceMatch]:
+        """Who this written form denotes, from HydraDB, memoised."""
+        word = (text or "").strip().lower()
+        # `setdefault` rather than the attribute, so an Asker assembled field
+        # by field — as the tests do — still memoises instead of raising.
+        memo = self.__dict__.setdefault("_denoted", {})
+        if word not in memo:
+            memo[word] = self.engine.denoted_by(word)
+        return memo[word]
+
+    def written_forms(self, entity_node: int) -> list[tuple[str, str]]:
+        """Every `(form, kind)` denoting this person, from HydraDB, memoised."""
+        memo = self.__dict__.setdefault("_forms", {})
+        if entity_node not in memo:
+            memo[entity_node] = self.engine.surfaces_of(entity_node)
+        return memo[entity_node]
+
+    def _is_a_person(self, match: SurfaceMatch) -> bool:
+        """Whether the entity behind a match is a person at all.
+
+        Every string the parser ever noticed became an entity, so most of them
+        are channel tags, status lines and vendor mailboxes. Personhood has to
+        be demonstrated: the resolver must have collapsed separate spellings
+        onto this entity, or seen one spelling used both as a handle and as a
+        name — and one of those spellings must be a name. Seeding retrieval
+        with `finance` otherwise drags in every document sharing a channel.
+        """
+        forms = self.written_forms(match.node)
+        if not forms:
+            return False
+        kinds = {kind for _, kind in forms}
+        if "name" not in kinds:
+            return False
+        if len(forms) < 2 and len(kinds) < 2:
+            return False
+        # A role alias can have an address too, and the resolver learned which
+        # localparts are functional from the corpus. Reject the whole entity
+        # rather than expanding its display-name spelling.
+        if any(
+            self.priors.is_functional(text.partition("@")[0])
+            for text, kind in forms
+            if kind == "email"
+        ):
+            return False
+        return not _organizational(match.name, forms)
+
     def resolve(self, surfaces: Counter) -> list[Person]:
-        """Map surfaces onto canonical people using the prebuilt ontology."""
+        """Map surfaces onto canonical people, by traversal through HydraDB.
+
+        Bounded, because every surface now costs a round trip. Twenty documents
+        carry hundreds of identity surfaces and the canvas draws eight people,
+        so resolving all of them spent seconds to display a handful. The
+        commonest are taken first: a surface appearing once in one document is
+        the least likely to be who the question is about.
+        """
+        wanted = surfaces.most_common(RESOLVE_BUDGET)
+        # Warm the memo concurrently first. The engine only partly overlaps
+        # these, so the win is modest -- but the loop below would otherwise
+        # spend the whole budget strictly one round trip at a time.
+        cold = [value for (_, value), _ in wanted
+                if value.strip().lower() not in self.__dict__.setdefault("_denoted", {})]
+        if len(cold) > 1:
+            with ThreadPoolExecutor(max_workers=RESOLVE_WORKERS) as pool:
+                list(pool.map(self.denoted_by, cold))
+
         people: dict[str, Person] = {}
-        for (kind, value), n in surfaces.items():
+        for (kind, value), n in wanted:
             if self.priors.is_functional(value):
                 continue
-            rows = self.lookup.execute(
-                "SELECT eid, node_id, canonical_name, confidence, alias_count"
-                " FROM alias WHERE surface = ? AND kind = ?",
-                (value, kind),
-            ).fetchall()
-            # A surface that resolves to more than one entity is ambiguous and
-            # names nobody; silently taking the first would be exactly the
-            # confident guess this whole system exists to avoid.
-            if len(rows) != 1:
+            matches = [m for m in self.denoted_by(value) if not kind or kind in m.kinds]
+            # A form that denotes more than one person names nobody; silently
+            # taking the first would be exactly the confident guess this whole
+            # system exists to avoid. The graph reports the count on the
+            # surface itself, so ambiguity is a property of the word rather
+            # than something inferred from how many rows came back.
+            if len(matches) != 1 or matches[0].entities != 1:
                 continue
-            r = rows[0]
-            p = people.get(r["eid"])
+            m = matches[0]
+            p = people.get(m.eid)
             if p is None:
-                p = people[r["eid"]] = Person(
-                    eid=r["eid"],
-                    name=r["canonical_name"],
-                    node=int(r["node_id"]),
-                    confidence=float(r["confidence"]),
-                    alias_count=int(r["alias_count"]),
+                p = people[m.eid] = Person(
+                    eid=m.eid,
+                    name=m.name,
+                    node=m.node,
+                    confidence=m.confidence,
+                    alias_count=m.alias_count,
                 )
             p.surfaces.add(value)
             p.mentions += n
@@ -392,82 +450,41 @@ class Asker:
                 if _role_alias(phrase) or _metric_shaped(phrase):
                     continue
                 lookup_phrase = phrase[1:] if size == 1 and phrase.startswith("@") else phrase
-                rows = self.lookup.execute(
-                    "SELECT DISTINCT eid, node_id, canonical_name, confidence, alias_count"
-                    " FROM alias WHERE surface = ? LIMIT 2",
-                    (lookup_phrase,),
-                ).fetchall()
-                if len(rows) != 1:
+                matches = self.denoted_by(lookup_phrase)
+                # One hop into HydraDB answers both halves at once: who this
+                # form denotes, and how many people it could mean. A form that
+                # reaches nobody is not a name; a form that reaches several
+                # names nobody, because expanding `sam` would drag in every
+                # Sam in the corpus and drown the question.
+                if len(matches) != 1 or matches[0].entities != 1:
                     continue
-                r = rows[0]
-                if r["eid"] in seen:
+                m = matches[0]
+                if m.eid in seen:
                     continue
                 if capitalized_single:
-                    given_name_evidence = self.lookup.execute(
-                        "SELECT count(DISTINCT surface) FROM alias "
-                        "WHERE kind = 'name' AND surface GLOB ?",
-                        (f"{lookup_phrase} *",),
-                    ).fetchone()[0]
-                    if given_name_evidence < 3:
+                    # A bare capitalised word is only a person if the ontology
+                    # knows full names beginning with it. The count rides on
+                    # the Surface node, computed over the whole ontology when
+                    # the graph was loaded, because the engine answers
+                    # anchored traversals and rejects the prefix scan that
+                    # would work it out here.
+                    if m.given_name_forms < 3:
                         continue
-                # Every string the parser ever noticed became an entity, so the
-                # table holds 166,429 of them and only 38,853 carry both a
-                # second surface form and a personal name. The rest are channel
-                # tags, status lines and vendor mailboxes that were never
-                # resolved to anything. Personhood has to be demonstrated: the
-                # resolver must have collapsed separate surfaces onto this
-                # entity, and one of them must be a name. Seeding graph
-                # retrieval with `finance` otherwise pulls in hundreds of
-                # documents that share nothing but a channel.
-                evidence = self.lookup.execute(
-                    "SELECT COUNT(DISTINCT surface) AS surfaces, "
-                    "COUNT(DISTINCT kind) AS kinds, "
-                    "SUM(kind = 'name') AS names FROM alias WHERE eid = ?",
-                    (r["eid"],),
-                ).fetchone()
-                # A name is what separates a person from a vendor mailbox or a
-                # channel tag, and corroboration is what separates a resolved
-                # person from a string seen once: either the resolver collapsed
-                # two spellings onto this entity, or it saw the one spelling
-                # used both as a handle and as a name.
-                if not evidence["names"] or (
-                    evidence["surfaces"] < 2 and evidence["kinds"] < 2
-                ):
+                if not self._is_a_person(m):
                     continue
-                aliases = self.lookup.execute(
-                    "SELECT surface, kind FROM alias WHERE eid = ?", (r["eid"],)
-                ).fetchall()
-                # Role aliases can have an address too. The resolver learned
-                # functional mailbox localparts from the corpus, so reject the
-                # entire entity rather than expanding its display-name alias.
-                if any(
-                    self.priors.is_functional(a["surface"].partition("@")[0])
-                    for a in aliases
-                    if a["kind"] == "email"
-                ):
-                    continue
-                if _organizational(
-                    r["canonical_name"], [(a["surface"], a["kind"]) for a in aliases]
-                ):
-                    continue
-                seen[r["eid"]] = Person(
-                    eid=r["eid"],
-                    name=r["canonical_name"],
-                    node=int(r["node_id"]),
-                    confidence=float(r["confidence"]),
-                    alias_count=int(r["alias_count"]),
+                seen[m.eid] = Person(
+                    eid=m.eid,
+                    name=m.name,
+                    node=m.node,
+                    confidence=m.confidence,
+                    alias_count=m.alias_count,
                     surfaces={lookup_phrase},
                 )
         return list(seen.values())
 
     def surfaces_of(self, person: Person) -> list[str]:
-        """Every surface form of a person, straight out of the lookup."""
-        return [
-            r[0]
-            for r in self.lookup.execute(
-                "SELECT DISTINCT surface FROM alias WHERE eid = ?", (person.eid,)
-            )
-        ]
+        """Every written form of a person — one inbound hop through HydraDB."""
+        return [text for text, _ in self.written_forms(person.node)]
 
     def aliases_of(self, person: Person) -> list[dict]:
         """Every surface form that resolves to this person, and why.

@@ -8,9 +8,23 @@ from glasshouse.ask import Asker, Person
 from glasshouse.graph import GraphCandidate, GraphEngine, Row
 from glasshouse.priors import Priors
 from glasshouse.recall import Candidate, LocalRecall
+from fake_ontology import FakeOntologyGraph
 
 
-class GraphScope:
+PHASE3_ALIASES = [
+    ("sam", "handle", "sam", 101, "S. Ratnaparkhi", 1.0, 4),
+    ("sam ratnaparkhi", "name", "sam", 101, "S. Ratnaparkhi", 1.0, 4),
+    ("s. ratnaparkhi", "name", "sam", 101, "S. Ratnaparkhi", 1.0, 4),
+    ("sam@redwood.ai", "email", "sam", 101, "S. Ratnaparkhi", 1.0, 4),
+    ("sam lee", "name", "sam-lee", 102, "Sam Lee", 1.0, 1),
+    ("sam patel", "name", "sam-patel", 103, "Sam Patel", 1.0, 1),
+]
+
+
+class GraphScope(FakeOntologyGraph):
+    def __init__(self):
+        super().__init__(PHASE3_ALIASES)
+
     def entities_for_documents(self, doc_ids, limit, documents=8):
         return []
 
@@ -74,26 +88,9 @@ def make_phase3_asker(tmp_path):
     )
     recall.optimize()
 
-    lookup = sqlite3.connect(tmp_path / "ontology.sqlite3")
-    lookup.row_factory = sqlite3.Row
-    lookup.execute(
-        "CREATE TABLE alias (surface, kind, eid, node_id, canonical_name, confidence, alias_count)"
-    )
-    lookup.executemany(
-        "INSERT INTO alias VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [
-            ("sam", "handle", "sam", 101, "S. Ratnaparkhi", 1.0, 4),
-            ("sam ratnaparkhi", "name", "sam", 101, "S. Ratnaparkhi", 1.0, 4),
-            ("s. ratnaparkhi", "name", "sam", 101, "S. Ratnaparkhi", 1.0, 4),
-            ("sam@redwood.ai", "email", "sam", 101, "S. Ratnaparkhi", 1.0, 4),
-            ("sam lee", "name", "sam-lee", 102, "Sam Lee", 1.0, 1),
-            ("sam patel", "name", "sam-patel", 103, "Sam Patel", 1.0, 1),
-        ],
-    )
     asker = Asker.__new__(Asker)
     asker.recall = recall
     asker.engine = GraphScope()
-    asker._lookup = lookup
     asker.priors = Priors()
     return asker
 
@@ -173,12 +170,12 @@ def test_stream_and_non_streaming_emit_graph_provenance_and_use_final_docs(
 
 
 def test_graph_failure_is_explicitly_reported(tmp_path, monkeypatch):
-    class BrokenGraph:
+    class BrokenGraph(FakeOntologyGraph):
         def documents_for_entities(self, seeds, limit):
             raise RuntimeError("offline")
 
     asker = make_phase3_asker(tmp_path)
-    asker.engine = BrokenGraph()
+    asker.engine = BrokenGraph(PHASE3_ALIASES)
     result = asker.retrieve(
         "What did Sam decide about the retention policy?", limit=2
     )
@@ -290,14 +287,7 @@ def test_scoped_ranking_never_exceeds_limit(tmp_path):
 
 
 def test_singleton_without_email_can_seed_graph_retrieval(tmp_path):
-    lookup = sqlite3.connect(tmp_path / "ontology.sqlite3")
-    lookup.row_factory = sqlite3.Row
-    lookup.execute(
-        "CREATE TABLE alias (surface, kind, eid, node_id, canonical_name, confidence, alias_count)"
-    )
-    lookup.executemany(
-        "INSERT INTO alias VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [
+    aliases = [
             ("maya", "handle", "maya", 7, "Maya", 1.0, 1),
             ("maya", "name", "maya", 7, "Maya", 1.0, 1),
             ("maya chen", "name", "maya-chen", 10, "Maya Chen", 1.0, 1),
@@ -308,10 +298,9 @@ def test_singleton_without_email_can_seed_graph_retrieval(tmp_path):
             ("change", "handle", "change", 13, "change", 1.0, 1),
             ("retention", "handle", "retention", 14, "Retention Analytics", 0.9, 2),
             ("retention analytics", "name", "retention", 14, "Retention Analytics", 0.9, 2),
-        ],
-    )
+        ]
     asker = Asker.__new__(Asker)
-    asker._lookup = lookup
+    asker.engine = FakeOntologyGraph(aliases)
     asker.priors = Priors()
     assert [
         (person.eid, person.node)

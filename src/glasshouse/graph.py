@@ -96,6 +96,28 @@ class GraphCandidate:
 
 
 @dataclass(slots=True)
+class SurfaceMatch:
+    """Who one written form denotes, read straight off the traversal path.
+
+    `entities` is the ambiguity guard and belongs to the *surface*, not to the
+    person: a form that reaches two people has not named either of them. It is
+    counted over the whole ontology when the graph is loaded, because the
+    engine answers anchored traversals and rejects the scan that would count it
+    at query time.
+    """
+
+    text: str
+    kinds: tuple[str, ...]
+    entities: int
+    given_name_forms: int
+    eid: str
+    name: str
+    node: int
+    confidence: float
+    alias_count: int
+
+
+@dataclass(slots=True)
 class EntityCandidate:
     """A person connected to evidence, not proof that they own or decided it."""
 
@@ -425,6 +447,97 @@ class GraphEngine:
             (found[eid] for eid in order),
             key=lambda e: (-e.documents, order.index(e.eid)),
         )
+
+    def denoted_by(self, text: str, limit: int = 4) -> list[SurfaceMatch]:
+        """Every person a written form could mean. One anchored hop.
+
+        This is the identity half of the brief -- deciding that `sam`,
+        `@soham` and `S. Ratnaparkhi` are one person -- answered by traversal
+        rather than by a lookup table. `node_id` turns the word into an anchor,
+        so a word taken out of a question costs one hop and no scan.
+
+        Returns every match rather than only the unambiguous one, because the
+        caller is entitled to know the difference between a form nobody uses
+        and a form eight people share; both are reasons not to expand it, and
+        only one of them is worth telling the reader about.
+        """
+        word = (text or "").strip().lower()
+        if not word:
+            return []
+        try:
+            # An anchored `MATCH` rather than `algo.SSpaths`: both cost about
+            # 0.09s, but this one returns the fields directly instead of a
+            # path to be walked, and the engine accepts it because the pattern
+            # is pinned to a literal node id. It will not accept the same
+            # statement under `UNWIND`, so there is no batched form -- every
+            # word costs a round trip, which is what bounds how many words a
+            # question is allowed to ask about.
+            rows = self.query(
+                f"MATCH (s:Surface {{id: {node_id('surface:' + word)}}})-[:DENOTES]->(e:Entity) "
+                "RETURN s.text AS text, s.kinds AS kinds, s.entities AS entities, "
+                "s.given_name_forms AS given, e.eid AS eid, e.canonical_name AS name, "
+                "e.confidence AS confidence, e.alias_count AS alias_count, e.id AS node "
+                f"LIMIT {int(limit)}",
+                strong=True,
+            )
+        except GraphError:
+            # An absent anchor is not an error, and neither is a graph that has
+            # not had `load_surface_graph.py` run against it. The caller falls
+            # back; taking the answer down would be a worse trade.
+            return []
+        out: list[SurfaceMatch] = []
+        for row in rows:
+            v = row.values
+            if not v.get("eid"):
+                continue
+            out.append(
+                SurfaceMatch(
+                    text=str(v.get("text") or word),
+                    kinds=tuple(k for k in str(v.get("kinds") or "").split("|") if k),
+                    entities=int(v.get("entities") or len(rows)),
+                    given_name_forms=int(v.get("given") or 0),
+                    eid=str(v["eid"]),
+                    name=str(v.get("name") or ""),
+                    node=int(v.get("node") or -1),
+                    confidence=float(v.get("confidence") or 0.0),
+                    alias_count=int(v.get("alias_count") or 1),
+                )
+            )
+        return out
+
+    def surfaces_of(self, entity_node: int, limit: int = 40) -> list[tuple[str, str]]:
+        """Every `(form, kind)` that denotes this person — the same edge, inwards.
+
+        The forward direction answers "who is this word"; this one answers
+        "what else is this person called", which is what retrieval expands a
+        query with, and what personhood is judged on: an entity carrying a
+        `name` alongside a second spelling is a person, while one carrying a
+        single `handle` is a channel tag the parser noticed once. Both answers
+        come from this one traversal rather than from four counting queries.
+        """
+        try:
+            rows = self.query(
+                f"CALL algo.SSpaths({{sourceNode: {int(entity_node)}, "
+                f"relTypes: ['DENOTES'], relDirection: 'incoming', "
+                f"maxLen: 1, pathCount: {int(limit)}}}) YIELD path RETURN path",
+                strong=True,
+            )
+        except GraphError:
+            return []
+        found: dict[str, tuple[str, ...]] = {}
+        for row in rows:
+            for node in (row.values.get("path") or {}).get("nodes", []):
+                if isinstance(node, dict):
+                    props = node.get("properties") or {}
+                    text = props.get("text")
+                    if text:
+                        found.setdefault(
+                            str(text),
+                            tuple(k for k in str(props.get("kinds") or "").split("|") if k),
+                        )
+        # One pair per role: a form written as both a handle and a name is two
+        # pieces of evidence about the person, not one.
+        return [(text, kind) for text, kinds in found.items() for kind in (kinds or ("",))]
 
     def documents_in_containers(
         self, containers: Sequence[tuple[str, int]], limit: int = 200

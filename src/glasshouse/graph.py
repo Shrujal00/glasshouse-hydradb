@@ -132,6 +132,169 @@ class EntityCandidate:
         return len(self.doc_ids)
 
 
+@dataclass(frozen=True, slots=True)
+class ClaimNode:
+    """One assertion, as the graph stores it.
+
+    Distinct from `claims.Claim`, which is what the extractor produced for one
+    question in one process. This is the same fact after it has been arbitrated,
+    written, and read back by whoever asks next -- which is the entire point of
+    putting it in the graph rather than in a cache.
+    """
+
+    claim_id: str
+    scope: str
+    subject: str
+    predicate: str
+    object_value: str
+    doc_id: str
+    title: str
+    source: str
+    asserted_at: str
+    trust: float
+    status: str
+    rationale: str
+    gen: str
+    node: int
+
+    @property
+    def cite(self) -> str:
+        where = self.source or "unknown source"
+        if self.asserted_at:
+            where += f", {self.asserted_at}"
+        return f"{self.title or self.doc_id} ({where})"
+
+
+@dataclass(frozen=True, slots=True)
+class DisagreementNode:
+    """One group of claims about the same thing that do not agree.
+
+    Every counting field on here was computed by the loader. The engine has no
+    aggregate beyond `count(*)` and no `GROUP BY` at all, so a disagreement
+    that could only be described by aggregating its claims could not be ranked,
+    filtered or listed -- it would be visible only to someone who already knew
+    which one to ask for.
+    """
+
+    key: str
+    scope: str
+    subject: str
+    predicate: str
+    sides: int
+    claims: int
+    documents: int
+    sources: tuple[str, ...]
+    trust_gap: float
+    decided: bool
+    winner_value: str
+    winner_source: str
+    winner_trust: float
+    winner_claim_id: str
+    runner_value: str
+    runner_source: str
+    runner_trust: float
+    runner_claim_id: str
+    rationale: str
+    first_asserted: str
+    last_asserted: str
+    entity_eid: str
+    entity_name: str
+    weight: float
+    gen: str
+    node: int
+
+
+# `RETURN` yields `<binding>.<property>`, never a whole node, so every read has
+# to name its fields. Kept as one string so the shape a caller gets back cannot
+# drift between the four statements that produce it.
+_CLAIM_FIELDS = (
+    "c.claim_id AS claim_id, c.scope AS scope, c.subject AS subject, "
+    "c.predicate AS predicate, c.object_value AS object_value, c.doc_id AS doc_id, "
+    "c.title AS title, c.source AS source, c.asserted_at AS asserted_at, "
+    "c.trust AS trust, c.status AS status, c.rationale AS rationale, "
+    "c.gen AS gen, c.id AS node"
+)
+
+_DISAGREEMENT_FIELDS = (
+    "d.key AS key, d.scope AS scope, d.subject AS subject, d.predicate AS predicate, "
+    "d.sides AS sides, d.claims AS claims, d.documents AS documents, "
+    "d.sources AS sources, d.trust_gap AS trust_gap, d.decided AS decided, "
+    "d.winner_value AS winner_value, d.winner_source AS winner_source, "
+    "d.winner_trust AS winner_trust, d.winner_claim_id AS winner_claim_id, "
+    "d.runner_value AS runner_value, d.runner_source AS runner_source, "
+    "d.runner_trust AS runner_trust, d.runner_claim_id AS runner_claim_id, "
+    "d.rationale AS rationale, d.first_asserted AS first_asserted, "
+    "d.last_asserted AS last_asserted, d.entity_eid AS entity_eid, "
+    "d.entity_name AS entity_name, d.weight AS weight, d.gen AS gen, d.id AS node"
+)
+
+
+def _literal(text: str) -> str:
+    """A value safe to inline into a statement.
+
+    Filters are inlined rather than parameterised because the engine accepts
+    `$rows` in an `UNWIND` and nowhere useful in a `WHERE`. Quotes and
+    backslashes are stripped rather than escaped: every caller of this is
+    filtering on a predicate name or a ticket key, neither of which contains
+    either, and a filter that silently matches nothing is a better failure than
+    one that changes the statement.
+    """
+    return re.sub(r"[\\'\"\x00-\x1f]", "", str(text))[:120]
+
+
+def _claim(v: dict[str, Any]) -> ClaimNode:
+    return ClaimNode(
+        claim_id=str(v.get("claim_id") or ""),
+        scope=str(v.get("scope") or ""),
+        subject=str(v.get("subject") or ""),
+        predicate=str(v.get("predicate") or ""),
+        object_value=str(v.get("object_value") or ""),
+        doc_id=str(v.get("doc_id") or ""),
+        title=str(v.get("title") or ""),
+        source=str(v.get("source") or ""),
+        asserted_at=str(v.get("asserted_at") or ""),
+        trust=float(v.get("trust") or 0.0),
+        status=str(v.get("status") or ""),
+        rationale=str(v.get("rationale") or ""),
+        gen=str(v.get("gen") or ""),
+        node=int(v.get("node") or 0),
+    )
+
+
+def _disagreement(v: dict[str, Any]) -> DisagreementNode:
+    return DisagreementNode(
+        key=str(v.get("key") or ""),
+        scope=str(v.get("scope") or ""),
+        subject=str(v.get("subject") or ""),
+        predicate=str(v.get("predicate") or ""),
+        sides=int(v.get("sides") or 0),
+        claims=int(v.get("claims") or 0),
+        documents=int(v.get("documents") or 0),
+        sources=tuple(s for s in str(v.get("sources") or "").split("|") if s),
+        trust_gap=float(v.get("trust_gap") or 0.0),
+        # Booleans are stored as 0/1: the engine takes a boolean property but
+        # returns it inconsistently enough that comparing to an integer is the
+        # only form that behaves the same on a write and on a read.
+        decided=bool(int(v.get("decided") or 0)),
+        winner_value=str(v.get("winner_value") or ""),
+        winner_source=str(v.get("winner_source") or ""),
+        winner_trust=float(v.get("winner_trust") or 0.0),
+        winner_claim_id=str(v.get("winner_claim_id") or ""),
+        runner_value=str(v.get("runner_value") or ""),
+        runner_source=str(v.get("runner_source") or ""),
+        runner_trust=float(v.get("runner_trust") or 0.0),
+        runner_claim_id=str(v.get("runner_claim_id") or ""),
+        rationale=str(v.get("rationale") or ""),
+        first_asserted=str(v.get("first_asserted") or ""),
+        last_asserted=str(v.get("last_asserted") or ""),
+        entity_eid=str(v.get("entity_eid") or ""),
+        entity_name=str(v.get("entity_name") or ""),
+        weight=float(v.get("weight") or 0.0),
+        gen=str(v.get("gen") or ""),
+        node=int(v.get("node") or 0),
+    )
+
+
 def _unwrap(cell: Any) -> Any:
     """Values arrive as {"type": ..., "value": ...}; paths nest the same shape."""
     if not isinstance(cell, dict) or "value" not in cell:
@@ -345,12 +508,15 @@ class GraphEngine:
             r if "id" in r else {**r, "id": node_id(f"{r['src']}-{rel}->{r['dst']}")}
             for r in rows
         ]
+        # An edge that carries nothing but its endpoints is a real thing to
+        # want -- `EVIDENCED_BY` says everything by existing -- and the parser
+        # rejects a `SET` with no assignments after it, so the clause is
+        # omitted rather than padded with a placeholder property.
         sets = ", ".join(f"r.{p} = row.{p}" for p in properties)
         self.query(
             f"UNWIND $rows AS row "
             f"MATCH (s:{src_label} {{id: row.src}}), (d:{dst_label or src_label} {{id: row.dst}}) "
-            f"MERGE (s)-[r:{rel} {{id: row.id}}]->(d) "
-            f"SET {sets}",
+            f"MERGE (s)-[r:{rel} {{id: row.id}}]->(d)" + (f" SET {sets}" if sets else ""),
             {"rows": list(rows)},
         )
 
@@ -738,3 +904,241 @@ class GraphEngine:
                 )
             )
         return candidates
+
+    # --- the contradiction graph --------------------------------------------
+
+    def disagreements(
+        self,
+        limit: int = 40,
+        *,
+        undecided_only: bool = False,
+        predicate: str = "",
+        scope: str = "",
+        gen: str = "",
+    ) -> list["DisagreementNode"]:
+        """Everything the organisation contradicts itself about, worst first.
+
+        This is a label scan, and a label scan is exactly what the engine
+        rejects on `Entity` and `Document`. It is allowed here because
+        `Disagreement` is a few hundred nodes rather than a few hundred
+        thousand: the same statement over `Document` returns
+        `429 resource_exhausted`, and over `Disagreement` it returns in about a
+        twentieth of a second. Size is the whole difference, so the loader's
+        job is to keep this label small enough to stay scannable.
+
+        The ranking properties -- how many documents back each side, how wide
+        the trust gap is, how many sources are involved -- are written by the
+        loader rather than aggregated here. `count(...) AS n` is rejected
+        outright by the parser, so anything a `GROUP BY` would have produced
+        has to exist as a property before the question is asked.
+
+        `gen` filters to one load. Nothing in this graph can be deleted --
+        `DETACH DELETE` is refused by admission control even for a single
+        anchored node with two edges, because deleting a vertex scans its
+        edges and these are wired to `Document` -- so a reload that changes
+        how claims are extracted leaves the previous run's nodes behind
+        forever. Stamping each load and reading one stamp is the only way to
+        show a current map rather than an accumulation of every map ever
+        built.
+        """
+        where = []
+        if gen:
+            where.append(f"d.gen = '{_literal(gen)}'")
+        if undecided_only:
+            where.append("d.decided = 0")
+        if predicate:
+            where.append(f"d.predicate = '{_literal(predicate)}'")
+        if scope:
+            where.append(f"d.scope = '{_literal(scope)}'")
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        try:
+            rows = self.query(
+                "MATCH (d:Disagreement)" + clause + " RETURN " + _DISAGREEMENT_FIELDS
+                + f" ORDER BY d.weight DESC LIMIT {int(limit)}",
+                strong=True,
+            )
+        except GraphError:
+            return []
+        return [_disagreement(row.values) for row in rows]
+
+    def disagreement(
+        self, key: str, *, gen: str = ""
+    ) -> tuple["DisagreementNode | None", list["ClaimNode"]]:
+        """One disagreement and every claim on every side of it.
+
+        Two anchored round trips rather than one statement: the summary and the
+        claims are different shapes, and the engine returns properties rather
+        than nodes, so a single query would have to repeat every summary field
+        on every claim row.
+
+        The claims are filtered by generation for the same reason the listing
+        is, and it matters more here. A disagreement keeps its node id across
+        reloads -- it is a digest of scope, subject and predicate, none of
+        which change -- while a claim's id is a digest of its *value*, which
+        does. So a reload leaves the old claims wired to the current
+        disagreement by `OVER` edges that cannot be deleted, and the panel
+        shows a claim marked `accepted` inside a disagreement the system says
+        it refused to decide. Two states of one arbitration on screen at once
+        is worse than showing nothing.
+        """
+        anchor = node_id(f"disagreement:{key}")
+        try:
+            head = self.query(
+                f"MATCH (d:Disagreement {{id: {anchor}}}) RETURN " + _DISAGREEMENT_FIELDS,
+                strong=True,
+            )
+            if not head:
+                return None, []
+            rows = self.query(
+                f"MATCH (d:Disagreement {{id: {anchor}}})-[:OVER]->(c:Claim)"
+                + (f" WHERE c.gen = '{_literal(gen)}'" if gen else "")
+                + " RETURN "
+                + _CLAIM_FIELDS
+                + " ORDER BY c.trust DESC",
+                strong=True,
+            )
+        except GraphError:
+            return None, []
+        return _disagreement(head[0].values), [_claim(row.values) for row in rows]
+
+    def claim_history(self, claim_id: str, depth: int = 6) -> list[dict[str, Any]]:
+        """What this value used to be, and what corrected it.
+
+        `SUPERSEDES` points from the claim that won to the claim it replaced,
+        so walking it outwards from the current value is walking backwards in
+        time. `algo.SSpaths` returns the whole chain in one call with every
+        property inline -- the alternative is one anchored hop per link at
+        ~0.09s each, and the chain is the answer rather than the last node on
+        it.
+        """
+        try:
+            rows = self.query(
+                f"CALL algo.SSpaths({{sourceNode: {node_id('claim:' + claim_id)}, "
+                f"relTypes: ['SUPERSEDES'], relDirection: 'outgoing', "
+                f"maxLen: {int(depth)}, pathCount: {int(depth) * 4}}}) YIELD path RETURN path",
+                strong=True,
+            )
+        except GraphError:
+            return []
+        # SSpaths yields every prefix of the chain as its own path. The longest
+        # one contains all the others, so the history is that path's nodes in
+        # order rather than the union of every row.
+        best: list[dict[str, Any]] = []
+        for row in rows:
+            nodes = (row.values.get("path") or {}).get("nodes", [])
+            if len(nodes) > len(best):
+                best = nodes
+        return [
+            {**(node.get("properties") or {}), "node": node.get("id")}
+            for node in best
+            if isinstance(node, dict)
+        ]
+
+    def blast_radius(self, claim_id: str, limit: int = 60) -> list[dict[str, Any]]:
+        """Who has been reading the version that turned out to be wrong.
+
+        Claim to the document that asserts it, then back out to everyone the
+        ontology connects to that document -- named in it, speaking in it, or
+        sending it. Three relationship types rather than one because they are
+        three different degrees of exposure: the person who sent the mail
+        stating a superseded limit is in a different position from someone
+        merely mentioned in it, and collapsing them would overstate the blast.
+
+        Anchored on the claim, so the `Document` label being half a million
+        nodes costs nothing -- the traversal never scans it.
+        """
+        anchor = node_id(f"claim:{claim_id}")
+        out: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for rel, how in (
+            ("SENT", "sent"),
+            ("SPOKE_IN", "spoke in"),
+            ("MENTIONED_IN", "named in"),
+        ):
+            try:
+                rows = self.query(
+                    f"MATCH (c:Claim {{id: {anchor}}})-[:EVIDENCED_BY]->(d:Document)"
+                    f"<-[:{rel}]-(e:Entity) "
+                    "RETURN e.eid AS eid, e.canonical_name AS name, e.id AS node, "
+                    f"d.doc_id AS doc_id, d.title AS title, d.source AS source "
+                    f"LIMIT {int(limit)}",
+                    strong=True,
+                )
+            except GraphError:
+                continue
+            for row in rows:
+                v = row.values
+                eid, doc_id = str(v.get("eid") or ""), str(v.get("doc_id") or "")
+                if not eid or (eid, doc_id) in seen:
+                    continue
+                seen.add((eid, doc_id))
+                out.append(
+                    {
+                        "eid": eid,
+                        "name": str(v.get("name") or ""),
+                        "node": int(v.get("node") or 0),
+                        "doc_id": doc_id,
+                        "title": str(v.get("title") or ""),
+                        "source": str(v.get("source") or ""),
+                        "how": how,
+                    }
+                )
+        # Strongest connection first: sending a document is evidence you meant
+        # what it says, being named in one is not.
+        order = {"sent": 0, "spoke in": 1, "named in": 2}
+        return sorted(out, key=lambda r: (order[r["how"]], r["name"]))[:limit]
+
+    def contradicted_by(self, claim_id: str, limit: int = 12) -> list["ClaimNode"]:
+        """The claims that disagree with this one, straight off the edge."""
+        try:
+            rows = self.query(
+                f"MATCH (a:Claim {{id: {node_id('claim:' + claim_id)}}})"
+                "-[r:CONTRADICTS]->(c:Claim) RETURN "
+                + _CLAIM_FIELDS
+                + f" ORDER BY c.trust DESC LIMIT {int(limit)}",
+                strong=True,
+            )
+        except GraphError:
+            return []
+        return [_claim(row.values) for row in rows]
+
+    def claims_about(self, eid: str, limit: int = 40) -> list["ClaimNode"]:
+        """Every claim wired to one person or thing through `ABOUT`.
+
+        The join between the two halves of the graph: the subject of a claim is
+        a written form, and the identity graph already knows who written forms
+        denote, so a claim about "Jordan" and a claim about "J. Reyes" are
+        reachable from the same anchor.
+        """
+        try:
+            rows = self.query(
+                f"MATCH (c:Claim)-[:ABOUT]->(e:Entity {{id: {node_id('entity:' + eid)}}}) "
+                "RETURN " + _CLAIM_FIELDS + f" ORDER BY c.trust DESC LIMIT {int(limit)}",
+                strong=True,
+            )
+        except GraphError:
+            return []
+        return [_claim(row.values) for row in rows]
+
+    def claim_stats(self) -> dict[str, int]:
+        """Sizes of the contradiction graph, for the header and for the loader.
+
+        `count(*)` is the one aggregate the parser accepts, and it is only safe
+        on labels this small.
+        """
+        out: dict[str, int] = {}
+        for key, cypher in (
+            ("claims", "MATCH (n:Claim) RETURN count(*)"),
+            ("disagreements", "MATCH (n:Disagreement) RETURN count(*)"),
+            # Both endpoints must be bound. An anonymous `(:Claim)` is
+            # rejected with "node label patterns are not supported yet", which
+            # is a parser limitation rather than anything about the data.
+            ("contradicts", "MATCH (a:Claim)-[:CONTRADICTS]->(b:Claim) RETURN count(*)"),
+            ("supersedes", "MATCH (a:Claim)-[:SUPERSEDES]->(b:Claim) RETURN count(*)"),
+        ):
+            try:
+                rows = self.query(cypher, strong=True, timeout=30)
+                out[key] = int(next(iter(rows[0].values.values()))) if rows else 0
+            except GraphError:
+                out[key] = 0
+        return out

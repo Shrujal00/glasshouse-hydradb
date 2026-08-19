@@ -100,3 +100,162 @@ def entity(eid: str) -> dict:
     if not rows:
         raise HTTPException(status_code=404, detail="entity not found")
     return {"eid": eid, "aliases": [r.values for r in rows]}
+
+
+# --- the contradiction graph ------------------------------------------------
+#
+# Everything below reads what `scripts/load_claims_graph.py` wrote. None of it
+# asks a question, retrieves a document or calls a model: the reasoning already
+# happened, offline, and these are traversals over the result. That is the
+# whole point of putting arbitration in the graph rather than in a cache --
+# "what does this company contradict itself about?" is answerable without
+# anyone having asked about any particular document first.
+
+
+def _generation() -> str:
+    """Which load to read.
+
+    Nothing in this graph can be deleted, so every load leaves the previous
+    one behind. The loader stamps its nodes and records the stamp; reading one
+    stamp is what makes the map current rather than cumulative.
+    """
+    try:
+        raw = json.loads((STATE / "claims_graph.json").read_text())
+        return str(raw.get("gen") or "")
+    except Exception:
+        return ""
+
+
+@app.get("/api/disagreements")
+def disagreements(limit: int = 40, undecided: bool = False, predicate: str = "") -> dict:
+    """The disagreement map: one row per thing the company contradicts itself about."""
+    found = asker().engine.disagreements(
+        limit=limit,
+        undecided_only=undecided,
+        predicate=predicate,
+        gen=_generation(),
+    )
+    return {
+        "generation": _generation(),
+        "disagreements": [
+            {
+                "key": d.key,
+                "scope": d.scope,
+                "subject": d.subject,
+                "predicate": d.predicate,
+                "sides": d.sides,
+                "claims": d.claims,
+                "documents": d.documents,
+                "sources": list(d.sources),
+                "trust_gap": round(d.trust_gap, 3),
+                "decided": d.decided,
+                "winner": {
+                    "value": d.winner_value,
+                    "source": d.winner_source,
+                    "trust": round(d.winner_trust, 3),
+                    "claim_id": d.winner_claim_id,
+                },
+                "runner": {
+                    "value": d.runner_value,
+                    "source": d.runner_source,
+                    "trust": round(d.runner_trust, 3),
+                    "claim_id": d.runner_claim_id,
+                },
+                "rationale": d.rationale,
+                "first_asserted": d.first_asserted,
+                "last_asserted": d.last_asserted,
+                "entity": {"eid": d.entity_eid, "name": d.entity_name}
+                if d.entity_eid
+                else None,
+                "weight": round(d.weight, 2),
+            }
+            for d in found
+        ],
+    }
+
+
+@app.get("/api/disagreement/{key}")
+def disagreement(key: str) -> dict:
+    """One disagreement, every claim on every side, and what settled it."""
+    head, claims = asker().engine.disagreement(key, gen=_generation())
+    if head is None:
+        raise HTTPException(status_code=404, detail="disagreement not found")
+    return {
+        "key": head.key,
+        "scope": head.scope,
+        "subject": head.subject,
+        "predicate": head.predicate,
+        "decided": head.decided,
+        "rationale": head.rationale,
+        "sides": head.sides,
+        "sources": list(head.sources),
+        # `decided` is false when arbitration refused to choose. The interface
+        # must not draw that as a verdict -- refusing is a result, and dressing
+        # it as a winner is the exact failure the trust floor exists to stop.
+        "winner_claim_id": head.winner_claim_id if head.decided else None,
+        "claims": [
+            {
+                "claim_id": c.claim_id,
+                "value": c.object_value,
+                "subject": c.subject,
+                "predicate": c.predicate,
+                "source": c.source,
+                "date": c.asserted_at,
+                "trust": round(c.trust, 3),
+                "status": c.status,
+                "doc_id": c.doc_id,
+                "title": c.title,
+                "cite": c.cite,
+            }
+            for c in claims
+        ],
+    }
+
+
+@app.get("/api/claim/{claim_id}/history")
+def claim_history(claim_id: str) -> dict:
+    """What this value used to be, and what corrected it — one SUPERSEDES walk."""
+    chain = asker().engine.claim_history(claim_id)
+    return {
+        "claim_id": claim_id,
+        "chain": [
+            {
+                "claim_id": step.get("claim_id", ""),
+                "value": step.get("object_value", ""),
+                "subject": step.get("subject", ""),
+                "predicate": step.get("predicate", ""),
+                "source": step.get("source", ""),
+                "date": step.get("asserted_at", ""),
+                "trust": step.get("trust", 0.0),
+                "status": step.get("status", ""),
+                "doc_id": step.get("doc_id", ""),
+                "title": step.get("title", ""),
+            }
+            for step in chain
+        ],
+    }
+
+
+@app.get("/api/claim/{claim_id}/blast")
+def claim_blast(claim_id: str, limit: int = 60) -> dict:
+    """Who has been reading this version — Claim → Document → the people on it."""
+    reached = asker().engine.blast_radius(claim_id, limit=limit)
+    return {
+        "claim_id": claim_id,
+        "people": reached,
+        "documents": sorted({r["doc_id"] for r in reached}),
+    }
+
+
+@app.get("/api/claims/stats")
+def claim_stats() -> dict:
+    """Size of the contradiction graph, for the header."""
+    out = asker().engine.claim_stats()
+    out["generation"] = _generation()
+    try:
+        raw = json.loads((STATE / "claims_graph.json").read_text())
+        out["work_items"] = raw.get("work_items", 0)
+        out["undecided"] = raw.get("undecided", 0)
+    except Exception:
+        pass
+    return out

@@ -1,7 +1,7 @@
 # Demo script — Glasshouse
 
-Four questions, roughly three minutes. Each one shows a different thing, and
-they are ordered so the strongest moment lands first while attention is highest.
+Five beats, roughly four minutes. Each one shows a different thing, and they
+are ordered so the strongest moment lands first while attention is highest.
 
 Server: `.venv/bin/python -m uvicorn glasshouse.server:app --host 127.0.0.1 --port 8080 --app-dir src`
 
@@ -77,6 +77,46 @@ including the ones that made it more willing to answer elsewhere."
 
 ---
 
+## 5 · The disagreement map  (~60s)
+
+Switch to the **disagreements** view in the header. Nothing has been asked.
+
+**Watch for:** a ranked list of things the organisation states two ways, each
+with both values, both sources, and whether the system settled it.
+
+**Say:** "Everything so far answered a question somebody had. This answers one
+nobody asked. Contradiction is stored as an edge in HydraDB, not recomputed per
+query — so 'what does this company disagree with itself about' is a ranked read
+of a label, not a search. No vector store can do this: you cannot embed your way
+to *two documents that disagree*, because they are about the same thing and sit
+next to each other in the embedding space. That similarity is the problem, not
+the solution."
+
+Then click into one, and use the two buttons on a claim:
+
+- **history** — walks `SUPERSEDES` backwards. "This is what the value used to
+  be, and the document that corrected it, at every step. The edge is only
+  written where recency is what actually settled the conflict — an unresolved
+  disagreement is not a history, and drawing it as one would be a claim about
+  time the evidence does not support."
+- **who read this** — claim → document → the people on that document. "This is
+  the alarming one. These are the people who sent, spoke in, or are named in the
+  document asserting the version that lost. Three hops."
+
+Then hit the **refuses to decide** filter.
+
+**Say:** "These are the ones it will not settle. That is the same abstention
+you saw in the first question, except now it is a property of the whole corpus
+rather than of one answer — a list of the things this company has not actually
+decided yet."
+
+**Be precise about scale.** This is built over the work items the most tools
+quote, not all 511,962 documents — extraction is a model call. Say that
+plainly; the selection is the corpus narrowing itself by cross-quotation, which
+is a better story than pretending it is exhaustive.
+
+---
+
 ## Showing the benchmark
 
 Run it live or show the output of:
@@ -110,6 +150,13 @@ exists in no document.
 - Do not describe the container entrance as graph-only. It runs on HydraDB, and
   the local facet table serves the identical scope as a fallback — the trace
   names which one answered, and so should the narration.
+- Do not imply the contradiction graph covers the whole corpus. It covers the
+  work items the most tools quote. The honest framing is that cross-quotation
+  is what makes two documents *able* to disagree, so that is where the
+  disagreements are — not that we ran out of budget.
+- Do not call a single-document contradiction a disagreement. One transcript
+  listing three thresholds is one text read three times; the loader drops
+  those deliberately and says how many it dropped.
 - `semantic` questions are weak, and the reason is worth stating plainly:
   they paraphrase deliberately ("too many requests errors" for `429`), and
   keyword retrieval cannot bridge that. The fix is dense retrieval, which this

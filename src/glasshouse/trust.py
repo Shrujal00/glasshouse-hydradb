@@ -109,6 +109,12 @@ class Conflict:
     winner: Claim
     losers: tuple[Claim, ...]
     rationale: str
+    # The work item both sides were talking about, empty when the question was
+    # the scope. Two claims are only allowed to contradict each other inside
+    # one scope: `owner` of "the API" in one ticket and `owner` of "the API" in
+    # an unrelated one are two facts, and calling them a disagreement would be
+    # the system inventing a conflict rather than finding one.
+    scope: str = ""
 
     @property
     def decided(self) -> bool:
@@ -190,21 +196,41 @@ def _flat(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", text.casefold())
 
 
-def _subject(claim: Claim) -> str:
+def subject_key(subject: str) -> str:
     """Grouping key for a subject. Case, punctuation and a leading article are
     not distinctions: `The audit-log shipper` and `audit log shipper` are one
-    subject, and treating them as two means the conflict is never found."""
-    text = claim.subject.casefold().strip()
+    subject, and treating them as two means the conflict is never found.
+
+    Public because the offline loader has to name a disagreement with the same
+    key arbitration grouped it under, and a second implementation of this that
+    drifted would silently split one disagreement into two.
+    """
+    text = (subject or "").casefold().strip()
     text = re.sub(r"^(the|a|an)\s+", "", text)
     return re.sub(r"[^a-z0-9]+", " ", text).strip()
 
 
+def _subject(claim: Claim) -> str:
+    return subject_key(claim.subject)
+
+
 def _value(claim: Claim) -> str:
     """Grouping key for a value. `30 percent`, `30%` and `30 %` are the same
-    number, and a trailing full stop is punctuation rather than disagreement."""
+    number, and a trailing full stop is punctuation rather than disagreement.
+
+    The space before the unit has to go, and for a while it did not: spelling
+    `percent` as `%` left `30 %`, which did not match `30%`, so two documents
+    that agreed the limit was 30% were reported as contradicting each other.
+    A manufactured disagreement is worse than a missed one -- it is the system
+    inventing a conflict and then explaining, with a rationale, why it picked
+    a side of it.
+    """
     text = claim.object_value.casefold().strip()
-    text = text.replace("percent", "%").replace("per cent", "%")
-    return re.sub(r"[^a-z0-9%]+", " ", text).strip()
+    text = text.replace("per cent", "%").replace("percent", "%")
+    text = re.sub(r"[^a-z0-9%]+", " ", text).strip()
+    # `30 %` -> `30%`. Done after the sweep above rather than before, so that
+    # `30 per cent` has already become `30 %` by the time it is closed up.
+    return re.sub(r"\s+%", "%", text)
 
 
 def _explicitness(claim: Claim) -> float:
@@ -306,13 +332,15 @@ def arbitrate(claims: Sequence[Claim]) -> Arbitration:
     saying how it lost, so the UI can show what was rejected and the graph can
     store the contradiction rather than quietly discarding half of it.
     """
-    groups: dict[tuple[str, str], list[Claim]] = {}
+    groups: dict[tuple[str, str, str], list[Claim]] = {}
     for claim in claims:
-        groups.setdefault((_subject(claim), claim.predicate), []).append(claim)
+        groups.setdefault(
+            (claim.scope, _subject(claim), claim.predicate), []
+        ).append(claim)
 
     settled: list[Claim] = []
     conflicts: list[Conflict] = []
-    for (subject, predicate), members in groups.items():
+    for (scope, subject, predicate), members in groups.items():
         by_value: dict[str, list[Claim]] = {}
         for claim in members:
             by_value.setdefault(_value(claim), []).append(claim)
@@ -384,6 +412,7 @@ def arbitrate(claims: Sequence[Claim]) -> Arbitration:
             Conflict(
                 subject=subject,
                 predicate=predicate,
+                scope=scope,
                 winner=winners[0],
                 losers=tuple(losers),
                 rationale=rationale,

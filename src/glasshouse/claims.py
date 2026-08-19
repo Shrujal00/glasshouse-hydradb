@@ -42,7 +42,7 @@ PREDICATES = ("owner", "status", "due_date", "limit", "reports_to")
 
 # Bumped whenever the prompt, the schema or the validation changes: cached rows
 # from an older extractor describe a different pipeline and must not be reused.
-EXTRACTOR_VERSION = "1"
+EXTRACTOR_VERSION = "3"
 
 CLAIMS = STATE / "claims.sqlite3"
 
@@ -57,6 +57,41 @@ MAX_SUBJECT = 120
 MAX_VALUE = 200
 
 _DATE = re.compile(r"\b(\d{4}-\d{2}-\d{2})")
+# Mail carries RFC 2822 dates -- `Tue, 10 Jun 2025 09:12:00 -0700` -- and gmail
+# is 121,390 of the 511,962 documents. Read as an ISO prefix that yields
+# `Tue, 10 Ju`, which is not a date, so every claim from a quarter of the
+# corpus arbitrated as undated and displayed as nonsense. Recency is half of
+# how a conflict is settled and the whole of what a supersession chain is
+# ordered by, so this is not cosmetic.
+_RFC2822 = re.compile(r"\b(\d{1,2})\s+([A-Z][a-z]{2})[a-z]*\s+(\d{4})\b")
+_MONTHS = {
+    m: i
+    for i, m in enumerate(
+        ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"),
+        start=1,
+    )
+}
+
+
+def normalise_date(raw: str) -> str:
+    """`YYYY-MM-DD`, or empty when the string does not carry a whole date.
+
+    Empty rather than a truncation: `trust.py` treats an undated claim as
+    neither recent nor stale, which is the right answer for a date nobody
+    recorded and the wrong answer for one that was recorded in a format this
+    failed to read. Better to have neither than to sort on `Wed, Feb 1`.
+    """
+    text = (raw or "").strip()
+    iso = _DATE.search(text)
+    if iso:
+        return iso.group(1)
+    rfc = _RFC2822.search(text)
+    if rfc:
+        day, month, year = rfc.groups()
+        if month in _MONTHS:
+            return f"{year}-{_MONTHS[month]:02d}-{int(day):02d}"
+    return ""
 _FENCE = re.compile(r"^\s*```(?:json)?|```\s*$")
 
 
@@ -70,6 +105,12 @@ class Claim:
     source: str
     asserted_at: str
     extractor_confidence: float
+    # What the claim was extracted *within*. Two documents only contradict each
+    # other when they are talking about the same thing, and the corpus's own
+    # answer to "the same thing" is the work item both documents name. Empty
+    # for the query path, where the question itself is the scope and every
+    # document was retrieved for it.
+    scope: str = ""
     trust: float = 0.0
     status: str = "accepted"  # accepted | disputed | superseded
     rationale: str = ""
@@ -173,7 +214,9 @@ def _parse(text: str) -> list[dict] | None:
     return [item for item in claims if isinstance(item, dict)]
 
 
-def _validate(item: dict, documents: Sequence, passages: dict[str, str]) -> Claim | None:
+def _validate(
+    item: dict, documents: Sequence, passages: dict[str, str], scope: str = ""
+) -> Claim | None:
     """One raw object into a claim, or nothing. Never a partially guessed one."""
     index = item.get("document")
     if isinstance(index, str) and index.strip().isdigit():
@@ -200,7 +243,6 @@ def _validate(item: dict, documents: Sequence, passages: dict[str, str]) -> Clai
     # and when it was written are facts retrieval already established, and
     # letting the model restate them is letting it get them wrong.
     asserted_at = getattr(document, "date", "") or ""
-    match = _DATE.search(asserted_at)
     return Claim(
         claim_id=_claim_id(document.doc_id, predicate, subject, value),
         subject=subject,
@@ -208,8 +250,9 @@ def _validate(item: dict, documents: Sequence, passages: dict[str, str]) -> Clai
         object_value=value,
         doc_id=document.doc_id,
         source=getattr(document, "source", "") or "",
-        asserted_at=match.group(1) if match else asserted_at[:10],
+        asserted_at=normalise_date(asserted_at),
         extractor_confidence=confidence,
+        scope=scope,
     )
 
 
@@ -260,12 +303,28 @@ class _Cache:
         self.conn.commit()
 
 
-def _key(doc_id: str, passage: str) -> str:
-    seed = f"{EXTRACTOR_VERSION}|{doc_id}|{passage}"
+def _key(doc_id: str, passage: str, scope: str = "") -> str:
+    seed = f"{EXTRACTOR_VERSION}|{scope}|{doc_id}|{passage}"
     return hashlib.sha256(seed.encode()).hexdigest()
 
 
-def _prompt(question: str, documents: Sequence, passages: dict[str, str]) -> str:
+SCOPED = """
+7. Every document below concerns {scope}. Two documents that assert something
+   about the same thing must write the subject the same way, or the fact that
+   they disagree cannot be found. So name the subject as plainly as the
+   documents do, and use the identical wording across documents.
+8. Write the subject as exactly "{scope}" ONLY when the assertion is about the
+   work item as a whole -- its own status, its own owner, its own due date.
+   Anything about a threshold, a component, a person or a sub-task takes that
+   thing's name as the subject, never "{scope}". Two different thresholds
+   mentioned in one meeting are two subjects, not two competing values of one:
+   filing them under the same subject would report the document as
+   contradicting itself when it does nothing of the kind."""
+
+
+def _prompt(
+    question: str, documents: Sequence, passages: dict[str, str], scope: str = ""
+) -> str:
     lines = [f"Question under investigation: {question}", "", "Documents:"]
     for i, document in enumerate(documents, start=1):
         date = getattr(document, "date", "")
@@ -276,7 +335,11 @@ def _prompt(question: str, documents: Sequence, passages: dict[str, str]) -> str
 
 
 def _ask(
-    question: str, documents: Sequence, passages: dict[str, str], model: str | None
+    question: str,
+    documents: Sequence,
+    passages: dict[str, str],
+    model: str | None,
+    scope: str = "",
 ) -> list[Claim] | None:
     """One batched call, one repair attempt, then give up.
 
@@ -285,9 +348,10 @@ def _ask(
     as "this document asserts nothing", the second must.
     """
     client = _client()
+    system = SYSTEM + (SCOPED.format(scope=scope) if scope else "")
     messages = [
-        {"role": "system", "content": SYSTEM},
-        {"role": "user", "content": _prompt(question, documents, passages)},
+        {"role": "system", "content": system},
+        {"role": "user", "content": _prompt(question, documents, passages, scope)},
     ]
     raw = client.chat(
         model=model or ADJUDICATION_MODEL, messages=messages, options={"temperature": 0}
@@ -304,7 +368,7 @@ def _ask(
         items = _parse(raw)
     if items is None:
         return None
-    found = [_validate(item, documents, passages) for item in items]
+    found = [_validate(item, documents, passages, scope) for item in items]
     return [claim for claim in found if claim is not None]
 
 
@@ -314,6 +378,7 @@ def extract(
     *,
     model: str | None = None,
     cache_path: Path | None = None,
+    scope: str = "",
 ) -> list[Claim]:
     """Claims over the fixed vocabulary, from the documents synthesis will see.
 
@@ -321,6 +386,13 @@ def extract(
     uses, so a claim can never be extracted from text the answer was not shown
     -- otherwise arbitration hands the model a value it cannot find in its own
     evidence and asks it to defend it.
+
+    `scope` names the thing every one of these documents is about — a work item
+    key, when the caller is the offline loader walking the corpus. It is
+    stamped on every claim and it is what arbitration groups within, so a
+    Confluence page and a Slack thread about the same ticket can contradict
+    each other while two unrelated tickets that both happen to have an `owner`
+    cannot. The query path leaves it empty: there, the question is the scope.
 
     Never raises. A missing model, a timeout, a corrupt cache and a model
     talking prose all degrade to fewer claims, and fewer claims degrades to the
@@ -345,7 +417,7 @@ def extract(
         claims: list[Claim] = []
         missing = []
         for document in docs:
-            key = _key(document.doc_id, passages[document.doc_id])
+            key = _key(document.doc_id, passages[document.doc_id], scope)
             stored = cache.get(key) if cache is not None else None
             if stored is None:
                 missing.append(document)
@@ -354,7 +426,7 @@ def extract(
         if not missing:
             return claims
 
-        fresh = _ask(question, missing, passages, model)
+        fresh = _ask(question, missing, passages, model, scope)
         if fresh is None:
             return claims
         by_document: dict[str, list[Claim]] = {d.doc_id: [] for d in missing}
@@ -363,7 +435,9 @@ def extract(
         for document in missing:
             found = by_document[document.doc_id]
             if cache is not None:
-                cache.put(_key(document.doc_id, passages[document.doc_id]), found)
+                cache.put(
+                    _key(document.doc_id, passages[document.doc_id], scope), found
+                )
             claims.extend(found)
         return claims
     except Exception:

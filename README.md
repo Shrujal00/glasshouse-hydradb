@@ -98,6 +98,13 @@ past the engine's 30s cap. `SSpaths` returns 200 paths in 0.04–0.27s.
 (:Document)-[:IN_CONTAINER]->(:Container {key, source, kind, name, documents})
 (:Entity)-[:SPOKE_IN]->(:Document)     -- who talked, not who was mentioned
 (:Entity)-[:SENT]->(:Document)         -- mail authorship
+
+(:Claim {predicate, subject, object_value, asserted_at, trust, status})
+(:Claim)-[:EVIDENCED_BY]->(:Document)
+(:Claim)-[:ABOUT]->(:Entity)
+(:Claim)-[:CONTRADICTS]->(:Claim)      -- both directions; neither side is a dead end
+(:Claim)-[:SUPERSEDES]->(:Claim)       -- only where recency is what settled it
+(:Disagreement {subject, predicate, sides, sources, trust_gap, decided})-[:OVER]->(:Claim)
 ```
 
 ### Identity resolution is a traversal
@@ -161,6 +168,51 @@ DISAGREEMENT — status of PD-INC-9821, 4 competing claims:
   Do not choose between these. Report that the documents disagree
   and give both values with their sources.
 ```
+
+### The contradiction graph
+
+Arbitration used to happen per question and then be thrown away. It is now
+written into HydraDB as edges, which changes what can be asked. Three
+questions become one traversal each, and none of them requires anyone to have
+asked about a document first:
+
+**What does this organisation contradict itself about?** Rank the
+`Disagreement` nodes. This is a label scan — the exact shape the engine
+rejects on `Entity` and `Document` — and it works here only because the label
+is small enough to stay scannable. Keeping it that way is the loader's job.
+
+**What was this value before, and what corrected it?** Walk `SUPERSEDES`
+outwards from the current claim. Every hop names the document that changed it.
+The edge is written *only* where recency is what actually settled the conflict;
+an unresolved disagreement is not the history of a fact, and drawing it as one
+would be a claim about time that the evidence does not support.
+
+**Who has been reading the version that turned out to be wrong?** Anchor on a
+claim, hop to the document asserting it, hop back out to everyone the ontology
+connects to that document — `SENT`, `SPOKE_IN` and `MENTIONED_IN` kept
+separate, because sending a document that states a superseded limit is a
+different position from being mentioned in it.
+
+Claims are extracted offline over the work items the most tools quote. That
+ranking is the corpus narrowing itself rather than us picking: a key like
+`ENG-4821` appears across GitHub, Linear, Drive, Confluence and Slack, and that
+cross-quotation is the precondition for two documents to disagree at all. A
+contradiction inside one Jira ticket is a typo; a contradiction between the
+Confluence page and the Slack thread about one work item is an organisation
+that has lost track of its own decision.
+
+Two constraints are worth stating plainly because they shaped the design:
+
+- **A disagreement must span two documents.** One meeting transcript listing
+  three thresholds is one text read three times. Those claims are still
+  written and still queryable — what they do not get is a node on a map
+  asserting the company contradicts itself.
+- **Nothing in this graph can be deleted.** `DETACH DELETE` is refused by
+  admission control even for a single anchored node with two edges, because
+  deleting a vertex scans its edges. So a reload cannot replace the previous
+  one, only sit beside it. Every load stamps its nodes with a generation and
+  the reader asks for one stamp — otherwise the map is an accumulation of
+  every map ever built.
 
 ---
 
@@ -263,11 +315,24 @@ it did; the timings are measured on the full 511,962-document corpus.
 # HydraDB: entities and documents first, then containers and roles
 .venv/bin/python scripts/load_document_graph.py
 .venv/bin/python scripts/load_facet_graph.py    # 1.23M edges     ~20 min
+.venv/bin/python scripts/load_surface_graph.py  # 209,388 surfaces
+
+# the contradiction graph — extraction is a model call, so this one costs
+.venv/bin/python scripts/load_claims_graph.py --keys 260 --dry-run   # what it would read
+.venv/bin/python scripts/load_claims_graph.py --keys 260
 ```
 
 `load_facet_graph.py` expects the documents and entities to already exist — it
 adds containers and edges and never creates an endpoint, so running it before
-`load_document_graph.py` writes containers that connect to nothing.
+`load_document_graph.py` writes containers that connect to nothing. The same
+holds for `load_claims_graph.py`, which wires claims to documents and people.
+
+`load_claims_graph.py` checkpoints every work item to
+`data/state/claims_graph.jsonl` as it goes, so an interrupted run resumes
+without paying for the same extraction twice. If a whole run comes back with
+no claims, check for a `429` before believing the corpus is quiet — a
+rate-limited extraction returns valid JSON asserting nothing, which is
+indistinguishable from a document that genuinely says nothing.
 
 Then serve it:
 

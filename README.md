@@ -19,9 +19,10 @@ and shows its work while it does.
 
 ---
 
-> **Build in progress.** This project is being developed for Hack Hydra,
-> 12–20 August 2026. Full documentation — architecture, ontology design,
-> evaluation results and demo — lands with the final submission on **20 August**.
+> **511,962 documents. Nine sources. One graph.** Ask a question in English and
+> watch the reasoning happen: identities resolving, the graph opening, sources
+> disagreeing, and — where the evidence does not support a verdict — the system
+> declining to give one.
 
 ---
 
@@ -52,6 +53,103 @@ engine, each for a different half of the problem.
 
 ---
 
+## How a question is answered
+
+```
+question
+   │
+   ├─ recall      511,962 documents → a 500-document page          (FTS5, ~60ms)
+   ├─ rerank      rescored against what each document records      (~40ms)
+   ├─ entrances   three ways into HydraDB, run independently
+   ├─ resolve     surface forms → people, via the prebuilt ontology (~1ms)
+   ├─ claims      explicit assertions extracted from the evidence
+   ├─ arbitrate   competing values scored, or deliberately not
+   └─ answer      cited, or an honest account of what is missing
+```
+
+### Three entrances into the graph
+
+Most graph-RAG systems have one: find the people named in the question, walk out
+from them. That entrance opens for **21 of 570** benchmark questions here — we
+measured it. So there are three.
+
+| Entrance | Traversal | Opens when |
+|---|---|---|
+| **Forward** | `(:Entity)-[:MENTIONED_IN]->(:Document)` | the question names a person |
+| **Reverse** | the same edge read inwards | always — gives the people attached to whatever retrieval found |
+| **Container** | `(:Document)-[:IN_CONTAINER]->(:Container)` | the question names a *place*: a channel, folder or space |
+
+The reverse entrance exists because *"who owns the audit-log shipper"* names
+nobody — the person is the answer, not the query. The container entrance exists
+because *"in the internal customer success and support knowledge space"* names
+neither a person nor a phrase the document body repeats; it names a **place**,
+and places are nodes.
+
+All three are anchored, single-hop `algo.SSpaths` calls. A labelled `MATCH`
+expansion over `MENTIONED_IN` scans the whole edge set — 15–30s per seed, often
+past the engine's 30s cap. `SSpaths` returns 200 paths in 0.04–0.27s.
+
+### What is in HydraDB
+
+```
+(:Entity  {eid, name})-[:MENTIONED_IN]->(:Document {doc_id, title})
+(:Document)-[:IN_CONTAINER]->(:Container {key, source, kind, name, documents})
+(:Entity)-[:SPOKE_IN]->(:Document)     -- who talked, not who was mentioned
+(:Entity)-[:SENT]->(:Document)         -- mail authorship
+```
+
+978,512 `IN_CONTAINER` edges, 159,374 `SENT`, 33,775 `SPOKE_IN`, across 57,765
+containers — loaded at ~61,000 items/min.
+
+### Arbitration
+
+Claims are extracted over a fixed predicate vocabulary — `owner`, `status`,
+`due_date`, `limit`, `reports_to` — from the *same passages the answer prompt
+sees*, so arbitration can never hand the model a value it cannot find in its own
+evidence. Competing values are then scored on source authority, recency,
+explicitness and corroboration.
+
+**The important part is that it is allowed to refuse.** When the margin between
+two values is too thin, it says so and hands both to the model:
+
+```
+DISAGREEMENT — status of PD-INC-9821, 4 competing claims:
+  NO ACCEPTED VALUE — trust is too close to choose (0.67 against 0.67)
+  Do not choose between these. Report that the documents disagree
+  and give both values with their sources.
+```
+
+---
+
+## Results
+
+Measured with `scripts/grade.py`, which grades every answer against the
+benchmark's own `answer_facts` rubric with an LLM judge, one fact at a time.
+The answer key lives **outside this repository** and only the two scoring
+scripts may read it; nothing under `src/glasshouse` can see it.
+
+<!-- RESULTS -->
+
+### Things we measured that did not work
+
+Kept here because a negative result that cost a day is worth as much as a
+feature, and because every one of these is a plausible-sounding idea:
+
+- **Person-seeded graph retrieval.** Opens for 21 of 570 questions, and where it
+  added documents it never added a correct one. The obvious graph-RAG design is
+  the wrong one for this benchmark.
+- **LLM query expansion.** `semantic` questions paraphrase deliberately — "too
+  many requests errors" for `429`, "Western Europe" for `eu-west`. Asking a model
+  to translate the question into document jargon made retrieval **worse**
+  (9/30 → 5/30): it invents plausible identifiers like `safest_numeric_mode`
+  that appear in no document, and the noise displaces real hits. Filtering the
+  expansion against actual corpus frequency did not rescue it.
+- **Reranking order.** Whether the container scope is placed first, middle or
+  last changes nothing at any context budget. The budget was the constraint, not
+  the ordering.
+
+---
+
 ## Getting started
 
 ```bash
@@ -62,13 +160,47 @@ cp .env.example .env      # add your HydraDB and Ollama keys
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 
 docker compose up -d      # HydraDB open-source engine
-python scripts/fetch_corpus.py
-python scripts/intake.py
 .venv/bin/python -m pytest
+```
+
+Then build the indexes and the graph. Each step is restartable and prints what
+it did; the timings are measured on the full 511,962-document corpus.
+
+```bash
+.venv/bin/python scripts/fetch_corpus.py        # pulls the corpus + answer key
+.venv/bin/python scripts/intake.py              # → data/normalized/*.jsonl
+
+# local indexes — no network, no API key
+.venv/bin/python scripts/build_index.py         # FTS5 + facets   4.3 GB   ~3.5 min
+.venv/bin/python scripts/build_facets.py        # facet store    0.4 GB      ~25s
+
+# the ontology: 209,388 surface forms → 166,429 identities
+.venv/bin/python scripts/resolve_entities.py
+.venv/bin/python scripts/load_graph.py          # → ontology.sqlite3
+
+# HydraDB: entities and documents first, then containers and roles
+.venv/bin/python scripts/load_document_graph.py
+.venv/bin/python scripts/load_facet_graph.py    # 1.23M edges     ~20 min
+```
+
+`load_facet_graph.py` expects the documents and entities to already exist — it
+adds containers and edges and never creates an endpoint, so running it before
+`load_document_graph.py` writes containers that connect to nothing.
+
+Then serve it:
+
+```bash
+.venv/bin/python -m uvicorn glasshouse.server:app \
+    --host 127.0.0.1 --port 8080 --app-dir src
 ```
 
 **Requirements:** Docker, Python 3.11+, a [HydraDB](https://app.hydradb.com) API
 key (Ship tier is free), and an [Ollama Cloud](https://ollama.com) key.
+
+The system degrades rather than breaks. Without the facet store it retrieves
+exactly as it did before that store existed; without the container half of the
+graph the local facet table serves the same scope, and the trace says which of
+the two answered.
 
 The benchmark corpus is not redistributed here; `fetch_corpus.py` pulls it from
 upstream. That script also keeps the benchmark's answer key **outside** this

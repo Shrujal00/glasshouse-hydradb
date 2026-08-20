@@ -230,10 +230,44 @@
   .views button:hover{color:var(--slate)}
   .views button[aria-selected="true"]{color:var(--trace); border-color:var(--edge); background:var(--pane)}
 
-  #map{flex:1; display:grid; grid-template-columns:minmax(0,1fr) 420px; min-height:0}
+  #map{flex:1; display:grid; grid-template-columns:330px minmax(0,1fr) 370px; min-height:0}
   #map[hidden]{display:none}
-  #map-list{overflow-y:auto; padding:4px 0 40px}
+  #map-list{overflow-y:auto; padding:4px 0 40px; border-right:1px solid var(--edge)}
   #map-detail{border-left:1px solid var(--edge); overflow-y:auto; background:var(--pane); padding:0 0 40px}
+
+  /* ── the disagreement, drawn ──────────────────────────────
+     The list tells you a disagreement exists. This shows you its shape: two
+     positions that do not agree, the documents standing behind each, and the
+     people those documents reached. Every ring is one hop in HydraDB, and
+     clicking is what walks it -- so the picture is the query, not an
+     illustration of one. */
+  #map-stage{position:relative; min-width:0; background:var(--ground); overflow:hidden}
+  #dcv{display:block; width:100%; height:100%; cursor:default}
+  #dcv.hot{cursor:pointer}
+  #map-stage .empty{
+    position:absolute; inset:0; display:grid; place-content:center; text-align:center;
+    color:var(--dim); font-size:13px; padding:40px; pointer-events:none; gap:10px;
+  }
+  #map-stage .empty b{color:var(--slate); font-weight:400; font-size:14px}
+  #dtip{
+    position:absolute; pointer-events:none; z-index:5; max-width:270px;
+    background:var(--pane); border:1px solid var(--edge); padding:9px 11px;
+    font-size:12px; line-height:1.45; color:var(--ink); border-radius:2px;
+    box-shadow:0 8px 26px rgba(0,0,0,.5);
+  }
+  #dtip .k{font-family:var(--mono); font-size:9.5px; letter-spacing:.08em;
+    text-transform:uppercase; color:var(--trace); display:block; margin-bottom:4px}
+  #dtip .m{color:var(--slate); font-size:11px; margin-top:4px}
+  .legend{
+    position:absolute; left:16px; bottom:14px; display:flex; gap:14px; flex-wrap:wrap;
+    font-family:var(--mono); font-size:10px; color:var(--dim); pointer-events:none;
+  }
+  .legend i{font-style:normal; display:inline-flex; align-items:center; gap:5px}
+  .legend .dot{width:8px; height:8px; border-radius:50%; display:inline-block}
+  .hint-hop{
+    position:absolute; right:16px; top:14px; font-family:var(--mono); font-size:10px;
+    color:var(--dim); pointer-events:none; letter-spacing:.05em;
+  }
 
   .map-head{padding:16px 22px 10px; border-bottom:1px solid var(--edge)}
   .map-head h1{font-size:15px; margin:0 0 4px; font-weight:600; letter-spacing:-.01em}
@@ -385,6 +419,10 @@
     overflow-x:auto; white-space:nowrap}
   .srow .so{font-size:11.5px; color:var(--dim); margin-top:2px; white-space:normal}
 
+  @media (max-width:1100px){
+    #map{grid-template-columns:1fr; grid-template-rows:auto 46vh auto}
+    #map-list{border-right:none; border-bottom:1px solid var(--edge)}
+  }
   @media (max-width:900px){
     #map{grid-template-columns:1fr; grid-template-rows:1fr 46vh}
     #map-detail{border-left:none; border-top:1px solid var(--edge)}
@@ -473,6 +511,22 @@
       <span class="map-count" id="map-count"></span>
     </div>
     <div id="dis-rows"></div>
+  </div>
+  <div id="map-stage">
+    <canvas id="dcv"></canvas>
+    <div id="dtip" hidden></div>
+    <div class="empty" id="dempty">
+      <b>pick a disagreement on the left</b>
+      <span>it gets drawn here — click any circle to walk one hop further
+        into the graph</span>
+    </div>
+    <div class="hint-hop" id="dhint" hidden>click a circle to hop</div>
+    <div class="legend" id="dlegend" hidden>
+      <i><span class="dot" style="background:var(--trace)"></span>answer given</i>
+      <i><span class="dot" style="background:var(--doubt)"></span>competing answer</i>
+      <i><span class="dot" style="background:var(--evidence)"></span>document</i>
+      <i><span class="dot" style="background:var(--slate)"></span>person</i>
+    </div>
   </div>
   <div id="map-detail"><div class="det-empty">select a disagreement.</div></div>
 </section>
@@ -1290,6 +1344,7 @@ function openDisagreement(key){
         esc(d.sources.join(', ')) + '</div>' +
         claims + '</div>' +
       '<div class="side" id="det-extra" hidden></div>';
+    drawDisagreement(d);
   }).catch(() => { $('map-detail').innerHTML =
     '<div class="det-empty">could not read that disagreement.</div>'; });
 }
@@ -1455,6 +1510,258 @@ $('ont').addEventListener('click', e => {
   if (c) { $('who-q').value = c.dataset.who; resolveWho(c.dataset.who); }
 });
 $('v-ont').addEventListener('click', () => showView('ont'));
+
+// ── the disagreement, drawn ──────────────────────────────────────────────
+// A second, self-contained renderer. Deliberately not the ask view's canvas:
+// that one is wired to a live event stream and its own node kinds, and
+// sharing it would couple two screens that fail for different reasons.
+//
+// The important property is that clicking is a real hop. A position expands
+// into the documents that assert it; a document expands into the people the
+// ontology connects to it. Both come from HydraDB, so the picture is the
+// query rather than a drawing of one.
+
+const dcv = document.getElementById('dcv'), dctx = dcv.getContext('2d');
+const dtip = $('dtip');
+const DPR2 = Math.min(devicePixelRatio || 1, 2);
+const slow = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+let dnodes = [], dlinks = [], dW = 0, dH = 0, dalpha = 0, dhover = null, dkey = null;
+
+const COLOUR = {
+  position:'#FF5C39', rival:'#E9917C', document:'#FFB03A', person:'#9A8C86',
+};
+
+function dresize(){
+  const r = dcv.parentElement.getBoundingClientRect();
+  if (!r.width || !r.height) return;
+  dW = r.width; dH = r.height;
+  dcv.width = dW * DPR2; dcv.height = dH * DPR2;
+  dctx.setTransform(DPR2, 0, 0, DPR2, 0, 0);
+}
+addEventListener('resize', () => { dresize(); dalpha = Math.max(dalpha, .5); });
+
+function dnode(id, kind, label, meta){
+  let n = dnodes.find(x => x.id === id);
+  if (n) return n;
+  // New nodes enter beside whatever they were expanded from, so the hop reads
+  // as a movement outward rather than as things blinking into existence.
+  const host = meta && meta.from ? dnodes.find(x => x.id === meta.from) : null;
+  const a = Math.random() * Math.PI * 2, rad = 40 + Math.random() * 30;
+  n = {
+    id, kind, label, meta: meta || {},
+    x: (host ? host.x : dW / 2) + Math.cos(a) * rad,
+    y: (host ? host.y : dH / 2) + Math.sin(a) * rad,
+    vx: 0, vy: 0, r: kind === 'position' || kind === 'rival' ? 13 : kind === 'document' ? 8 : 6,
+    born: performance.now(), open: false,
+  };
+  dnodes.push(n);
+  dalpha = Math.max(dalpha, .85);
+  return n;
+}
+function dlink(a, b, kind){
+  if (dlinks.some(l => l.a === a && l.b === b)) return;
+  dlinks.push({a, b, kind});
+  dalpha = Math.max(dalpha, .6);
+}
+
+function dtick(){
+  if (dalpha < .004){ dalpha = 0; return; }
+  for (let i = 0; i < dnodes.length; i++){
+    const n = dnodes[i];
+    n.vx += (dW/2 - n.x) * 0.0026 * dalpha;
+    n.vy += (dH/2 - n.y) * 0.0026 * dalpha;
+    for (let j = i+1; j < dnodes.length; j++){
+      const m = dnodes[j];
+      const dx = n.x - m.x, dy = n.y - m.y;
+      let d2 = dx*dx + dy*dy; if (d2 < 1) d2 = 1;
+      const f = Math.min(2600 / d2, 3.2) * dalpha;
+      const d = Math.sqrt(d2);
+      n.vx += dx/d * f; n.vy += dy/d * f;
+      m.vx -= dx/d * f; m.vy -= dy/d * f;
+    }
+  }
+  for (const l of dlinks){
+    const a = dnodes.find(n => n.id === l.a), b = dnodes.find(n => n.id === l.b);
+    if (!a || !b) continue;
+    // A CONTRADICTS edge is held longer than an evidence edge, so the two
+    // positions sit apart from each other rather than collapsing together --
+    // the gap between them is the thing being shown.
+    const rest = l.kind === 'contradicts' ? 190 : 78;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const d = Math.max(Math.hypot(dx, dy), 1);
+    const f = (d - rest) * 0.014 * dalpha;
+    a.vx += dx/d * f; a.vy += dy/d * f;
+    b.vx -= dx/d * f; b.vy -= dy/d * f;
+  }
+  for (const n of dnodes){
+    n.x += (n.vx *= 0.82); n.y += (n.vy *= 0.82);
+    n.x = Math.max(n.r + 14, Math.min(dW - n.r - 14, n.x));
+    n.y = Math.max(n.r + 14, Math.min(dH - n.r - 14, n.y));
+  }
+  dalpha *= 0.965;
+}
+
+function ddraw(){
+  dtick();
+  dctx.clearRect(0, 0, dW, dH);
+  if (!dnodes.length){ requestAnimationFrame(ddraw); return; }
+  const near = dhover
+    ? new Set([dhover.id, ...dlinks.filter(l => l.a === dhover.id || l.b === dhover.id)
+        .flatMap(l => [l.a, l.b])])
+    : null;
+
+  for (const l of dlinks){
+    const a = dnodes.find(n => n.id === l.a), b = dnodes.find(n => n.id === l.b);
+    if (!a || !b) continue;
+    const lit = !near || (near.has(a.id) && near.has(b.id));
+    dctx.save();
+    dctx.globalAlpha = lit ? 1 : .16;
+    if (l.kind === 'contradicts'){
+      // Drawn dashed and in the doubt colour: this edge means "these two do
+      // not agree", which is not the same relationship as "this backs that".
+      dctx.strokeStyle = COLOUR.rival; dctx.lineWidth = 1.6; dctx.setLineDash([5, 4]);
+    } else {
+      dctx.strokeStyle = 'rgba(154,140,134,.34)'; dctx.lineWidth = 1;
+    }
+    dctx.beginPath(); dctx.moveTo(a.x, a.y); dctx.lineTo(b.x, b.y); dctx.stroke();
+    dctx.restore();
+  }
+
+  for (const n of dnodes){
+    const lit = !near || near.has(n.id);
+    const grow = slow ? 1 : Math.min(1, (performance.now() - n.born) / 260);
+    const r = n.r * (0.6 + 0.4 * grow);
+    dctx.save();
+    dctx.globalAlpha = lit ? 1 : .2;
+    if (n.kind === 'position' || n.kind === 'rival'){
+      dctx.shadowColor = COLOUR[n.kind]; dctx.shadowBlur = n === dhover ? 22 : 12;
+    }
+    dctx.beginPath(); dctx.arc(n.x, n.y, r, 0, Math.PI*2);
+    dctx.fillStyle = COLOUR[n.kind]; dctx.fill();
+    dctx.shadowBlur = 0;
+    // A ring marks a node that still has a hop left in it. Once expanded the
+    // ring goes, so the picture says where there is more to see.
+    if (!n.open && (n.kind === 'position' || n.kind === 'rival' || n.kind === 'document')){
+      dctx.beginPath(); dctx.arc(n.x, n.y, r + 4.5, 0, Math.PI*2);
+      dctx.strokeStyle = COLOUR[n.kind]; dctx.globalAlpha = lit ? .4 : .1;
+      dctx.lineWidth = 1; dctx.stroke();
+    }
+    dctx.restore();
+
+    if (lit && (n.kind === 'position' || n.kind === 'rival' || n === dhover)){
+      dctx.save();
+      dctx.globalAlpha = lit ? .95 : .2;
+      dctx.font = '11px ui-monospace, monospace';
+      dctx.fillStyle = '#F5EFEA'; dctx.textAlign = 'center';
+      const t = n.label.length > 26 ? n.label.slice(0, 25) + '…' : n.label;
+      dctx.fillText(t, n.x, n.y + r + 15);
+      dctx.restore();
+    }
+  }
+  requestAnimationFrame(ddraw);
+}
+dresize(); requestAnimationFrame(ddraw);
+
+function dat(ev){
+  const r = dcv.getBoundingClientRect();
+  const x = ev.clientX - r.left, y = ev.clientY - r.top;
+  let best = null, bd = 1e9;
+  for (const n of dnodes){
+    const d = Math.hypot(n.x - x, n.y - y);
+    if (d < n.r + 9 && d < bd){ best = n; bd = d; }
+  }
+  return best;
+}
+
+dcv.addEventListener('mousemove', ev => {
+  const n = dat(ev);
+  dhover = n;
+  dcv.classList.toggle('hot', !!n && !n.open);
+  if (!n){ dtip.hidden = true; return; }
+  const kindWord = {position:'answer given', rival:'competing answer',
+                    document:'document', person:'person'}[n.kind];
+  dtip.innerHTML = '<span class="k">' + kindWord + '</span>' + esc(n.label) +
+    (n.meta.note ? '<div class="m">' + esc(n.meta.note) + '</div>' : '') +
+    (n.open ? '' : '<div class="m">click to hop</div>');
+  dtip.hidden = false;
+  const r = dcv.getBoundingClientRect();
+  dtip.style.left = Math.min(n.x + 16, r.width - 285) + 'px';
+  dtip.style.top = Math.max(8, n.y - 14) + 'px';
+});
+dcv.addEventListener('mouseleave', () => { dhover = null; dtip.hidden = true; });
+dcv.addEventListener('click', ev => { const n = dat(ev); if (n && !n.open) dexpand(n); });
+
+// One click, one hop.
+function dexpand(n){
+  n.open = true;
+  dalpha = Math.max(dalpha, .8);
+  if (n.kind === 'position' || n.kind === 'rival'){
+    // A position expands into the documents that assert it.
+    for (const c of (n.meta.claims || [])){
+      const id = 'doc:' + c.doc_id;
+      dnode(id, 'document', c.title || c.doc_id, {
+        from: n.id, note: c.source + (c.date ? ', ' + c.date : ''),
+        claim: c.claim_id, doc: c.doc_id,
+      });
+      dlink(n.id, id, 'evidence');
+    }
+  } else if (n.kind === 'document' && n.meta.claim){
+    // A document expands into the people the ontology connects to it -- the
+    // blast radius, one hop further out.
+    fetch('/api/claim/' + encodeURIComponent(n.meta.claim) + '/blast')
+      .then(r => r.json()).then(b => {
+        // Only the people on *this* document. The endpoint answers for the
+        // whole claim, which can span more than one.
+        const here = (b.people || [])
+          .filter(p => !n.meta.doc || p.doc_id === n.meta.doc).slice(0, 10);
+        if (!here.length){
+          n.meta.note = 'nobody the ontology connects to this document';
+          return;
+        }
+        for (const p of here){
+          const id = 'person:' + p.eid;
+          dnode(id, 'person', p.name || p.eid, {from: n.id, note: p.how + ' this document'});
+          dlink(n.id, id, 'evidence');
+        }
+      }).catch(() => {});
+  }
+}
+
+function drawDisagreement(d){
+  dnodes = []; dlinks = []; dhover = null; dtip.hidden = true;
+  dkey = d.key;
+  $('dempty').hidden = true; $('dlegend').hidden = false; $('dhint').hidden = false;
+  dresize();
+  // One node per position, not per claim: two documents saying the same thing
+  // are one position with corroboration, and drawing them as two circles would
+  // show a disagreement wider than the one that exists.
+  const sides = [];
+  d.claims.forEach(c => {
+    let g = sides.find(x => x.side === c.side);
+    if (!g){ g = {side: c.side, claims: []}; sides.push(g); }
+    g.claims.push(c);
+  });
+  const ids = [];
+  sides.forEach(g => {
+    const lead = g.claims[0];
+    const won = d.winner_claim_id && g.claims.some(c => c.claim_id === d.winner_claim_id);
+    const id = 'pos:' + g.side;
+    dnode(id, won ? 'position' : 'rival', lead.value, {
+      claims: g.claims,
+      note: g.claims.length + ' document' + (g.claims.length > 1 ? 's' : '') +
+            ' · ' + [...new Set(g.claims.map(c => c.source))].join(', ') +
+            ' · trust ' + lead.trust.toFixed(2),
+    });
+    ids.push(id);
+  });
+  // Every position disagrees with every other one. That is what the graph
+  // stores, and it is why the middle of this picture is empty.
+  for (let i = 0; i < ids.length; i++)
+    for (let j = i+1; j < ids.length; j++) dlink(ids[i], ids[j], 'contradicts');
+  dalpha = 1;
+}
+
 </script>
 
 

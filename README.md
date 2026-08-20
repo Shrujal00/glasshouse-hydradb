@@ -26,207 +26,345 @@ and shows its work while it does.
 
 ---
 
-## What it does
+## Contents
 
-Give a search engine half a million documents from Slack, Gmail, Linear, Google
-Drive, HubSpot, Fireflies, GitHub, Jira and Confluence, and it will happily find
-you a document. That is not the hard part.
-
-The hard part is what the Hack Hydra Track 01 brief says out loud:
-
-> *"Extraction is the easy part now that LLMs are cheap. The hard part is entity
-> resolution and ontology alignment: deciding that "Sam", "@soham" and
-> "S. Ratnaparkhi" are one person, and figuring out which of two contradictory
-> statements to trust."*
-
-Glasshouse is built around four ideas:
-
-| | |
-|---|---|
-| **One node per real thing** | `@priya`, `priya_nair@redwood.com` and `Priya Nair` are one person. |
-| **Every fact carries its source** | Not *"Sam owns billing"* but *"Sam owns billing — per this page, dated March 3."* |
-| **Disagreements are kept, not hidden** | When two documents conflict, both survive. One wins, and the reason is shown. |
-| **Knowing when to shut up** | If the answer is not in the corpus, say so — while still surfacing what *is* known. |
-
-Built on **HydraDB**, using both the managed cloud API and the open-source
-engine, each for a different half of the problem.
+- [What Glasshouse does](#what-glasshouse-does)
+- [Core capabilities](#core-capabilities)
+- [How HydraDB is used](#how-hydradb-is-used)
+- [Tech stack](#tech-stack)
+- [Repository structure](#repository-structure)
+- [Getting started](#getting-started)
+- [The pipeline, end to end](#the-pipeline-end-to-end)
+- [Modules in depth](#modules-in-depth)
+- [What the engine will and will not do](#what-the-engine-will-and-will-not-do)
+- [Results](#results)
+- [What we measured that did not work](#what-we-measured-that-did-not-work)
+- [Attribution](#attribution)
 
 ---
 
-## How a question is answered
+## What Glasshouse does
+
+A company keeps the same fact in nine different tools. Over time those facts
+drift apart, and nobody notices — because nobody is looking. You find out when
+somebody acts on the wrong one.
+
+Glasshouse does three things about that:
+
+1. **Resolves who everyone is.** 401,163 written forms across nine tools
+   collapse into 166,429 people — and 163,262 proposed merges are *refused*,
+   because a hard rule said those two are not the same person.
+2. **Pulls competing statements out as records.** Typed claims with a subject,
+   a value, a source and a date, extracted only from text the answer itself was
+   shown.
+3. **Decides between them in code, or refuses.** Source authority, recency,
+   corroboration, hedging. No model call — the same claims arbitrate the same
+   way every time, and the reason shown to the reader is the reason the answer
+   came out that way.
+
+The result is a map of **what the organisation contradicts itself about**,
+built without anybody asking a question.
+
+---
+
+## Core capabilities
+
+| Capability | Where |
+|---|---|
+| Parsing nine tool formats into one shape | `corpus.py`, `scripts/intake.py` |
+| BM25 + facet index over 511,962 documents | `recall.py`, `scripts/build_index.py` |
+| Entity resolution — blocking, pair scoring, hard constraints | `resolve.py` |
+| Identity as a graph traversal (`Surface -[:DENOTES]-> Entity`) | `graph.py` |
+| Three entrances into the graph: person, evidence, container | `ask.py` |
+| Claim extraction over a fixed predicate vocabulary | `claims.py` |
+| Deterministic arbitration with abstention | `trust.py` |
+| Contradiction stored as edges, found offline | `scripts/load_claims_graph.py` |
+| Disagreement map, supersession chains, blast radius | `graph.py`, `server.py` |
+| Managed-cloud hybrid retrieval (dense + sparse) | `cloud.py` |
+| Streaming UI — disagreements, ontology, ask | `server.py`, `web/index.html` |
+| Retrieval scoring and per-fact answer grading | `scripts/score.py`, `scripts/grade.py` |
+
+183 tests, no network required to run them.
+
+---
+
+## How HydraDB is used
+
+HydraDB is used **twice, for two different jobs**, and the product does not
+work without either.
+
+### The open-source engine — the ontology and the reasoning
+
+Self-hosted in Docker. Holds who everybody is and what contradicts what:
 
 ```
-question
-   │
-   ├─ recall      511,962 documents → a 500-document page          (FTS5, ~60ms)
-   ├─ rerank      rescored against what each document records      (~40ms)
-   ├─ entrances   three ways into HydraDB, run independently
-   ├─ resolve     surface forms → people, via the prebuilt ontology (~1ms)
-   ├─ claims      explicit assertions extracted from the evidence
-   ├─ arbitrate   competing values scored, or deliberately not
-   └─ answer      cited, or an honest account of what is missing
-```
-
-### Three entrances into the graph
-
-Most graph-RAG systems have one: find the people named in the question, walk out
-from them. That entrance opens for **21 of 570** benchmark questions here — we
-measured it. So there are three.
-
-| Entrance | Traversal | Opens when |
-|---|---|---|
-| **Forward** | `(:Entity)-[:MENTIONED_IN]->(:Document)` | the question names a person |
-| **Reverse** | the same edge read inwards | always — gives the people attached to whatever retrieval found |
-| **Container** | `(:Document)-[:IN_CONTAINER]->(:Container)` | the question names a *place*: a channel, folder or space |
-
-The reverse entrance exists because *"who owns the audit-log shipper"* names
-nobody — the person is the answer, not the query. The container entrance exists
-because *"in the internal customer success and support knowledge space"* names
-neither a person nor a phrase the document body repeats; it names a **place**,
-and places are nodes.
-
-All three are anchored, single-hop `algo.SSpaths` calls. A labelled `MATCH`
-expansion over `MENTIONED_IN` scans the whole edge set — 15–30s per seed, often
-past the engine's 30s cap. `SSpaths` returns 200 paths in 0.04–0.27s.
-
-### What is in HydraDB
-
-```
-(:Surface {text, kinds, entities, given_name_forms})-[:DENOTES]->(:Entity)
-(:Alias    {surface, kind})-[:RESOLVES_TO {score, signals}]->(:Entity)
-(:Entity   {eid, name})-[:MENTIONED_IN]->(:Document {doc_id, title})
-(:Document)-[:IN_CONTAINER]->(:Container {key, source, kind, name, documents})
-(:Entity)-[:SPOKE_IN]->(:Document)     -- who talked, not who was mentioned
-(:Entity)-[:SENT]->(:Document)         -- mail authorship
-
+(:Surface {text, kinds, entities})-[:DENOTES]->(:Entity)          209,388
+(:Alias {surface, kind})-[:RESOLVES_TO {score, signals}]->(:Entity)
+(:Entity {eid, canonical_name})-[:MENTIONED_IN|SPOKE_IN|SENT]->(:Document)
+(:Document)-[:IN_CONTAINER]->(:Container {key, source, kind})      978,512 edges
 (:Claim {predicate, subject, object_value, asserted_at, trust, status})
 (:Claim)-[:EVIDENCED_BY]->(:Document)
 (:Claim)-[:ABOUT]->(:Entity)
-(:Claim)-[:CONTRADICTS]->(:Claim)      -- both directions; neither side is a dead end
-(:Claim)-[:SUPERSEDES]->(:Claim)       -- only where recency is what settled it
-(:Disagreement {subject, predicate, sides, sources, trust_gap, decided})-[:OVER]->(:Claim)
+(:Claim)-[:CONTRADICTS]->(:Claim)
+(:Claim)-[:SUPERSEDES]->(:Claim)
+(:Disagreement)-[:OVER]->(:Claim)
 ```
 
-### Identity resolution is a traversal
+Four questions become one traversal each:
 
-The brief calls entity resolution the hard part, so it runs in the graph rather
-than beside it. A word taken out of a question anchors a `Surface` node by the
-deterministic digest of its text, and one `DENOTES` hop reaches every person
-that written form could mean:
+| Question | Traversal | Measured |
+|---|---|---|
+| Who is `@jae`? | one anchored `DENOTES` hop | ~0.09s |
+| Which page is in this space? | one hop into `Container` | 159,030 documents → 6 |
+| What do we contradict ourselves about? | rank `Disagreement` nodes | 0.06s |
+| Who read the version that was wrong? | `Claim → Document ← Entity` | 3 hops |
 
-```
-MATCH (s:Surface {id: <digest of "jordan reyes">})-[:DENOTES]->(e:Entity)
-RETURN s.entities, s.kinds, e.eid, e.canonical_name, e.alias_count
-```
+**Turn the engine off and all four return zero.** It is not storing a result
+computed elsewhere; it is where the reasoning lives.
 
-**How many people it reaches is the ambiguity guard.** A form denoting two
-people has named neither, and refusing to expand it is the same discipline as
-refusing to answer from evidence that is not there.
+### The managed cloud — recall
 
-The engine shapes this design rather than merely tolerating it. It rejects
-unanchored scans — `MATCH (n:Entity) RETURN count(*)` over 166,429 entities
-times out, and over `Document` returns `429` — and it will not accept the
-traversal under `UNWIND`, so there is no batched form. Everything a scan would
-have computed is therefore counted once at load time and carried on the node:
-`entities` for ambiguity, `given_name_forms` for whether a bare capitalised
-word is a name, `kinds` for whether one spelling was used as both a handle and
-a name. Query time reads only the node it anchored on.
+`cloud.py` puts documents into HydraDB Cloud and asks it which handful are
+worth reading. Its hybrid retrieval brings **dense embeddings this stack could
+not otherwise have** — every Ollama embedding model returns 401 on this account
+and the local GPU is 6 GB — so a question that paraphrases (`"too many requests
+errors"` for `429`) can still find its document.
 
-The cost is real and worth stating: resolution went from a microsecond SQLite
-lookup to ~0.09s per word with no batching. Retrieval is ~1.9s cold and ~0.5s
-once the per-process memo is warm, and the number of surfaces resolved out of
-the retrieved documents is capped at 48 because the canvas draws eight people
-and resolving three hundred to show eight was waste.
+---
 
-978,512 `IN_CONTAINER` edges, 159,374 `SENT`, 33,775 `SPOKE_IN`, across 57,765
-containers — loaded at ~61,000 items/min.
+## Tech stack
 
-### Arbitration
+- **Python ≥ 3.11**, no framework — `pyproject.toml` for dependencies
+- **HydraDB open-source engine** in Docker — the ontology and contradiction graph
+- **HydraDB Cloud** (`hydra-db` SDK) — hybrid document recall
+- **SQLite FTS5** — BM25 over 511,962 documents, and the facet store
+- **FastAPI + server-sent events** — streaming so the reasoning is watchable
+- **Vanilla HTML/CSS/JS** — one file, no build step, force-directed canvas
+- **Ollama Cloud** (`gpt-oss:120b`) — claim extraction and answer synthesis only
+- **pytest** — 183 tests
 
-Claims are extracted over a fixed predicate vocabulary — `owner`, `status`,
-`due_date`, `limit`, `reports_to` — from the *same passages the answer prompt
-sees*, so arbitration can never hand the model a value it cannot find in its own
-evidence. Competing values are then scored on source authority, recency,
-explicitness and corroboration.
+---
 
-Recency is one of those signals, and it nearly didn't work. Only Gmail and
-Fireflies record a `date` field; the other seven sources set one on under 2% of
-their documents — every Jira ticket, every Linear issue and all 285,605 Slack
-messages arrived at the adjudicator undated, so a later correction and the
-earlier report it corrected were indistinguishable. Linear, Jira, HubSpot and
-Confluence write their dates into the body instead, as activity logs and
-revision histories, so `derive_date` takes the latest one found there. Date
-coverage went from **26% to 51%** of the corpus, and from 0% to ~97% on exactly
-the ticket and CRM documents where `status` and `owner` claims live.
-
-**The important part is that it is allowed to refuse.** When the margin between
-two values is too thin, it says so and hands both to the model:
+## Repository structure
 
 ```
-DISAGREEMENT — status of PD-INC-9821, 4 competing claims:
-  NO ACCEPTED VALUE — trust is too close to choose (0.67 against 0.67)
-  Do not choose between these. Report that the documents disagree
-  and give both values with their sources.
+src/glasshouse/
+  corpus.py      parse nine tool formats into one document shape
+  recall.py      SQLite FTS5 + BM25, facet-weighted
+  facets.py      folders, channels, spaces, speakers — the container store
+  resolve.py     entity resolution: blocking, scoring, hard constraints
+  graph.py       HydraDB open-source engine: traversals and the read API
+  cloud.py       HydraDB Cloud: ingest and hybrid recall
+  claims.py      claim extraction over a fixed predicate vocabulary
+  trust.py       deterministic arbitration and abstention
+  ask.py         the three entrances, retrieval, and the event stream
+  answer.py      passage selection and synthesis
+  priors.py      per-source and per-role priors
+  server.py      FastAPI: the three screens and their endpoints
+  web/index.html the interface — disagreements, ontology, ask
+
+scripts/
+  fetch_corpus.py        pull the benchmark corpus
+  intake.py              → data/normalized/*.jsonl
+  build_index.py         → the BM25 index
+  build_facets.py        → the facet store
+  resolve_entities.py    → entities.jsonl
+  load_graph.py          entities and aliases → HydraDB
+  load_document_graph.py documents and mention edges
+  load_facet_graph.py    containers, speakers, senders
+  load_surface_graph.py  Surface nodes — the query-time entrance
+  load_claims_graph.py   the contradiction graph
+  ingest_cloud.py        documents → HydraDB Cloud
+  score.py               retrieval scoring
+  grade.py               per-fact answer grading
 ```
 
-### The contradiction graph
+---
 
-Arbitration used to happen per question and then be thrown away. It is now
-written into HydraDB as edges, which changes what can be asked. Three
-questions become one traversal each, and none of them requires anyone to have
-asked about a document first:
+## Getting started
 
-**What does this organisation contradict itself about?** Rank the
-`Disagreement` nodes. This is a label scan — the exact shape the engine
-rejects on `Entity` and `Document` — and it works here only because the label
-is small enough to stay scannable. Keeping it that way is the loader's job.
+### Prerequisites
 
-**What was this value before, and what corrected it?** Walk `SUPERSEDES`
-outwards from the current claim. Every hop names the document that changed it.
-The edge is written *only* where recency is what actually settled the conflict;
-an unresolved disagreement is not the history of a fact, and drawing it as one
-would be a claim about time that the evidence does not support.
+- Python 3.11+
+- Docker (for the HydraDB open-source engine)
+- An Ollama Cloud key (claim extraction and synthesis)
+- A HydraDB Cloud key (optional — only for `cloud.py`)
 
-**Who has been reading the version that turned out to be wrong?** Anchor on a
-claim, hop to the document asserting it, hop back out to everyone the ontology
-connects to that document — `SENT`, `SPOKE_IN` and `MENTIONED_IN` kept
-separate, because sending a document that states a superseded limit is a
-different position from being mentioned in it.
+### Install
 
-Claims are extracted offline over the work items the most tools quote. That
-ranking is the corpus narrowing itself rather than us picking: a key like
-`ENG-4821` appears across GitHub, Linear, Drive, Confluence and Slack, and that
-cross-quotation is the precondition for two documents to disagree at all. A
-contradiction inside one Jira ticket is a typo; a contradiction between the
-Confluence page and the Slack thread about one work item is an organisation
-that has lost track of its own decision.
+```bash
+git clone https://github.com/Shrujal00/glasshouse-hydradb.git
+cd glasshouse-hydradb
 
-Measured on the current load: **260 work items** read,
-**668 claims** extracted, **59 disagreements**
-found, **35 of which the system refuses to settle**. The map query
-returns in **0.06s** — an unanchored label scan, which the engine only tolerates
-because `Disagreement` is a few dozen nodes rather than a few hundred thousand.
+python -m venv .venv && .venv/bin/pip install -e ".[dev]"
+cp .env.example .env        # then fill it in
+docker compose up -d        # the HydraDB open-source engine
+.venv/bin/python -m pytest  # 183 tests, no network needed
+```
 
-Three constraints are worth stating plainly because they shaped the design:
+### Environment variables
 
-- **A disagreement must span two documents.** One meeting transcript listing
-  three thresholds is one text read three times. Those claims are still
-  written and still queryable — what they do not get is a node on a map
-  asserting the company contradicts itself.
-- **A verdict has to name its reason.** The arithmetic can separate two claims
-  by more than the margin while no individual signal is nameable, and
-  *"accepted — no signal separated these claims"* is a verdict contradicting
-  its own rationale. Where nothing can be named, it refuses instead. Restated
-  values are folded first, so `resolved` and `SUP-3812 (transient p95 spike) is
-  resolved` are one position rather than two — a manufactured disagreement is
-  worse than a missed one, because everything downstream then explains, with a
-  rationale, why it picked a side of an argument nobody is having.
-- **Nothing in this graph can be deleted.** `DETACH DELETE` is refused by
-  admission control even for a single anchored node with two edges, because
-  deleting a vertex scans its edges. So a reload cannot replace the previous
-  one, only sit beside it. Every load stamps its nodes with a generation and
-  the reader asks for one stamp — otherwise the map is an accumulation of
-  every map ever built.
+| Variable | Required | What for |
+|---|---|---|
+| `HYDRA_LOCAL_TOKEN` | yes | auth for the local engine — 32+ characters |
+| `HYDRA_HTTP_URI` | yes | defaults to `http://127.0.0.1:8443` |
+| `OLLAMA_API_KEY` | yes | claim extraction and answer synthesis |
+| `OLLAMA_HOST` | no | defaults to `https://ollama.com` |
+| `HYDRA_DB_API_KEY` | no | HydraDB Cloud recall |
+| `GOLD_ANSWERS_PATH` | no | grading only — **outside the repo**, and nothing under `src/glasshouse` may read it |
+
+### Build the indexes and the graph
+
+Each step is restartable and prints what it did. Timings are measured on the
+full corpus.
+
+```bash
+.venv/bin/python scripts/fetch_corpus.py
+.venv/bin/python scripts/intake.py               # → data/normalized/*.jsonl
+
+# local indexes — no network, no key
+.venv/bin/python scripts/build_index.py          # FTS5 + facets  4.3 GB  ~3.5 min
+.venv/bin/python scripts/build_facets.py         # facet store    0.4 GB  ~25s
+
+# the ontology: 401,163 written forms → 166,429 identities
+.venv/bin/python scripts/resolve_entities.py     # 22.6s
+.venv/bin/python scripts/load_graph.py           # entities + aliases  ~3 min
+
+# HydraDB: documents before containers, containers before surfaces
+.venv/bin/python scripts/load_document_graph.py
+.venv/bin/python scripts/load_facet_graph.py     # 1.23M edges  ~20 min
+.venv/bin/python scripts/load_surface_graph.py   # 209,388 surfaces
+
+# the contradiction graph — extraction is a model call, so this one costs
+.venv/bin/python scripts/load_claims_graph.py --keys 260 --dry-run
+.venv/bin/python scripts/load_claims_graph.py --keys 260
+```
+
+**Order matters.** Every loader after `load_graph.py` matches endpoints that
+must already exist; run one early and it writes edges that connect to nothing.
+
+`load_claims_graph.py` checkpoints every work item, so an interrupted run
+resumes without re-paying for the same extraction. If a whole run comes back
+with no claims, check for a `429` before believing the corpus is quiet — a
+rate-limited extraction returns valid JSON asserting nothing.
+
+### Run it
+
+```bash
+.venv/bin/python -m uvicorn glasshouse.server:app \
+    --host 127.0.0.1 --port 8080 --app-dir src
+```
+
+Open `http://127.0.0.1:8080`. It lands on the disagreement map.
+
+---
+
+## The pipeline, end to end
+
+```
+nine tool exports
+      │  scripts/intake.py — one document shape
+      ▼
+511,962 normalized documents
+      │  scripts/build_index.py — BM25 + facets
+      │  scripts/ingest_cloud.py — HydraDB Cloud recall
+      ▼
+      │  scripts/resolve_entities.py — 8.7M pairs scored,
+      │     42,959 merges accepted, 163,262 refused
+      ▼
+166,429 identities ──► scripts/load_graph.py + load_surface_graph.py
+      │                    (:Surface)-[:DENOTES]->(:Entity)
+      ▼
+      │  scripts/load_document_graph.py + load_facet_graph.py
+      │     mentions, speakers, senders, containers
+      ▼
+      │  scripts/load_claims_graph.py
+      │     claims.py extracts → trust.py arbitrates → edges
+      ▼
+(:Claim)-[:CONTRADICTS]->(:Claim)   the disagreement map
+```
+
+At query time `ask.py` opens whichever entrance the question allows — a person,
+the evidence, or a container — arbitrates whatever claims come back, and
+streams every step to the interface as it happens.
+
+---
+
+## Modules in depth
+
+### `corpus.py` — parsing
+Nine formats into one shape. `derive_date` recovers dates from document
+*bodies* — activity logs, revision histories — because seven of nine sources
+set a `date` field on under 2% of their documents. Coverage went **26% → 51%**,
+and 0% → ~97% on the ticket and CRM documents where `status` and `owner` claims
+live.
+
+### `resolve.py` — the ontology
+Blocking, pairwise scoring, union-find clustering, and hard constraints. Two
+constraints do most of the precision work: one person has one corporate
+mailbox, and shared mailboxes are excluded outright. **163,262 merges were
+refused** — nearly four times more than were accepted. That ratio is the
+difference between an ontology and string similarity.
+
+### `graph.py` — the engine
+Every read is anchored on a literal node id, because `node_id()` is a
+deterministic int64 digest of a string key and nothing else in this engine is
+addressable. Holds the traversals, the contradiction read API, and the
+measured constraints that shape both.
+
+### `claims.py` — extraction
+Five predicates: `owner`, `status`, `due_date`, `limit`, `reports_to`. Anything
+outside them is dropped rather than force-fitted. Every value is checked
+against the text the model was actually shown — a value that is not there is
+discarded, which is what stops a plausible-sounding colleague's name reaching
+the reader as fact.
+
+### `trust.py` — arbitration
+Arithmetic, not a model call: source authority, predicate-sensitive recency,
+corroboration, hedging, extraction confidence. Ten runs with the input order
+shuffled produce byte-identical verdicts. **It is allowed to refuse** — and
+where no individual signal can be named, it does, because a verdict whose
+rationale reads "no signal separated these claims" is a verdict contradicting
+itself.
+
+### `ask.py` — the three entrances
+Person-seeded, evidence-first, and container. The container entrance is the one
+that earns its keep; the obvious person-seeded one is a measured failure (see
+below).
+
+---
+
+## What the engine will and will not do
+
+Every line probed against the running engine. These are not complaints — they
+are why the architecture looks the way it does.
+
+| Query | Result |
+|---|---|
+| `MATCH (s:Surface {id: …})-[:DENOTES]->(e:Entity)` | works, ~0.09s |
+| `MATCH (d:Disagreement) … ORDER BY … LIMIT` | works, 0.06s |
+| `MATCH (n:Entity) RETURN count(*)` | timeout — 166,429 nodes |
+| `MATCH (n:Document) RETURN count(*)` | 429 resource_exhausted |
+| the anchored `MATCH` under `UNWIND` | rejected — no batched read |
+| `MATCH (n:Entity) RETURN count(n) AS n` | rejected — aliased aggregate |
+| `MATCH (:A)-[:R]->(:B)` | rejected — bind both endpoints |
+| `DETACH DELETE`, even one anchored node | 429 — admission control |
+| `algo.SSpaths` maxLen 3 / maxLen 4 | 1.0s / timeout |
+
+Three rules follow. **Anchor every read on a literal node id.** **There is no
+batched read**, so bound how many you make. **Anything a scan would compute
+must be precomputed at load time** and stored as a node property — which is why
+a `Surface` node carries how many people its form could mean.
+
+A useful correction to the first rule: it is about label *size*, not query
+shape. A scan with `WHERE`, `ORDER BY` and relationships runs in 0.03s over a
+few hundred nodes. That is the only reason the disagreement map is a real graph
+query rather than a lookup table, and it makes keeping that label small the
+loader's job.
+
+Nothing in this graph can be deleted, so every load stamps its nodes with a
+generation and the reader asks for one stamp — otherwise the map is an
+accumulation of every map ever built.
 
 ---
 
@@ -245,7 +383,7 @@ harness run on 2026-08-18, before any of the work below.
 | `info_not_found` — knowing the answer is absent | 20 | **100%** |
 | `intra_document_reasoning` | 40 | **81%** |
 | `constrained` | 30 | **67%** |
-| `conflicting_info` — the arbitration case | 20 | **59%** |
+| `conflicting_info` — the arbitration case | 20 | **60%** |
 | `basic` | 175 | 40% |
 | `project_related` | 40 | 38% |
 | `metadata` — authorship, ownership, location | 100 | 32% |
@@ -263,7 +401,7 @@ What moved, and why:
   in" was never in the index and never shown to the model. Indexing the facets,
   scoping by container and reranking a deep page took the expected document
   reaching the model from 8/30 to 16/30.
-- **`conflicting_info` went from ~52% to 59%**, after claims arbitration and
+- **`conflicting_info` went from ~52% to 60%**, after claims arbitration and
   after recovering the dates that arbitration ranks on.
 - **`info_not_found` held at 100%** through every prompt change — including the
   ones that deliberately made the system more willing to answer elsewhere. That
@@ -297,75 +435,6 @@ feature, and because every one of these is a plausible-sounding idea:
   the ordering.
 
 ---
-
-## Getting started
-
-```bash
-git clone https://github.com/Shrujal00/glasshouse-hydradb.git
-cd glasshouse-hydradb
-
-cp .env.example .env      # add your HydraDB and Ollama keys
-python -m venv .venv && .venv/bin/pip install -e ".[dev]"
-
-docker compose up -d      # HydraDB open-source engine
-.venv/bin/python -m pytest
-```
-
-Then build the indexes and the graph. Each step is restartable and prints what
-it did; the timings are measured on the full 511,962-document corpus.
-
-```bash
-.venv/bin/python scripts/fetch_corpus.py        # pulls the corpus + answer key
-.venv/bin/python scripts/intake.py              # → data/normalized/*.jsonl
-
-# local indexes — no network, no API key
-.venv/bin/python scripts/build_index.py         # FTS5 + facets   4.3 GB   ~3.5 min
-.venv/bin/python scripts/build_facets.py        # facet store    0.4 GB      ~25s
-
-# the ontology: 209,388 surface forms → 166,429 identities
-.venv/bin/python scripts/resolve_entities.py
-.venv/bin/python scripts/load_graph.py          # → ontology.sqlite3
-
-# HydraDB: entities and documents first, then containers and roles
-.venv/bin/python scripts/load_document_graph.py
-.venv/bin/python scripts/load_facet_graph.py    # 1.23M edges     ~20 min
-.venv/bin/python scripts/load_surface_graph.py  # 209,388 surfaces
-
-# the contradiction graph — extraction is a model call, so this one costs
-.venv/bin/python scripts/load_claims_graph.py --keys 260 --dry-run   # what it would read
-.venv/bin/python scripts/load_claims_graph.py --keys 260
-```
-
-`load_facet_graph.py` expects the documents and entities to already exist — it
-adds containers and edges and never creates an endpoint, so running it before
-`load_document_graph.py` writes containers that connect to nothing. The same
-holds for `load_claims_graph.py`, which wires claims to documents and people.
-
-`load_claims_graph.py` checkpoints every work item to
-`data/state/claims_graph.jsonl` as it goes, so an interrupted run resumes
-without paying for the same extraction twice. If a whole run comes back with
-no claims, check for a `429` before believing the corpus is quiet — a
-rate-limited extraction returns valid JSON asserting nothing, which is
-indistinguishable from a document that genuinely says nothing.
-
-Then serve it:
-
-```bash
-.venv/bin/python -m uvicorn glasshouse.server:app \
-    --host 127.0.0.1 --port 8080 --app-dir src
-```
-
-**Requirements:** Docker, Python 3.11+, a [HydraDB](https://app.hydradb.com) API
-key (Ship tier is free), and an [Ollama Cloud](https://ollama.com) key.
-
-The system degrades rather than breaks. Without the facet store it retrieves
-exactly as it did before that store existed; without the container half of the
-graph the local facet table serves the same scope, and the trace says which of
-the two answered.
-
-The benchmark corpus is not redistributed here; `fetch_corpus.py` pulls it from
-upstream. That script also keeps the benchmark's answer key **outside** this
-repository, so the pipeline cannot train or tune against it.
 
 ---
 

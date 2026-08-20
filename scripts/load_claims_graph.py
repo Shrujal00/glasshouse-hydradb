@@ -717,6 +717,13 @@ def run(args: argparse.Namespace) -> None:
     if not found:
         raise SystemExit("no claims extracted; nothing to load")
     print(f"  {len(found):,} claims from {len({c.scope for c in found}):,} work items")
+    if args.extract_only:
+        # Extraction is the slow, paid half and it only needs the model and the
+        # local index; writing needs the graph. Separating them lets a long
+        # extraction run alongside a graph rebuild instead of waiting for it,
+        # and the checkpoint means the write half picks up everything later.
+        print("  --extract-only: stopping before the graph write")
+        return
 
     print("arbitrating ...", flush=True)
     arbitration = trust.arbitrate(found)
@@ -809,6 +816,8 @@ def main() -> None:
     ap.add_argument("--refresh", action="store_true", help="ignore the claim checkpoint")
     ap.add_argument("--no-resolve", action="store_true", help="skip ABOUT edges")
     ap.add_argument("--dry-run", action="store_true", help="show the work items and stop")
+    ap.add_argument("--extract-only", action="store_true",
+                    help="extract and checkpoint, but do not touch the graph")
     run(ap.parse_args())
 
 

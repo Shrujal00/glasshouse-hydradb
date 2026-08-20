@@ -55,22 +55,62 @@ def load_gold() -> list[dict]:
 
 
 def judge(fact: str, written: str, model: str) -> bool:
-    """One fact, one verdict. Kept separate so a long answer cannot blur them."""
-    reply = answer_module._client().chat(
-        model=model,
-        messages=[
-            {"role": "system", "content": JUDGE},
-            {
-                "role": "user",
-                "content": f"REQUIRED FACT:\n{fact}\n\nOUR ANSWER:\n{written}\n\nVerdict:",
-            },
-        ],
-        options={"temperature": 0},
-    )
-    return "SUPPORTED" in reply["message"]["content"].upper()
+    """One fact, one verdict. Kept separate so a long answer cannot blur them.
+
+    Retried, because a full run is hours long and the connection to the model
+    is the least reliable thing in it. An unretried blip in hour two used to
+    raise straight out of the loop and end the run -- which was survivable only
+    because the report is checkpointed, and is still an hour of grading that
+    has to be resumed by hand.
+
+    A fact that cannot be judged after the retries counts as unsupported.
+    Guessing SUPPORTED would inflate the score with facts nobody checked.
+    """
+    for attempt in range(4):
+        try:
+            reply = answer_module._client().chat(
+                model=model,
+                messages=[
+                    {"role": "system", "content": JUDGE},
+                    {
+                        "role": "user",
+                        "content": f"REQUIRED FACT:\n{fact}\n\nOUR ANSWER:\n{written}\n\nVerdict:",
+                    },
+                ],
+                options={"temperature": 0},
+            )
+            return "SUPPORTED" in reply["message"]["content"].upper()
+        except Exception as exc:
+            if attempt == 3:
+                print(f"    ! judge failed after 4 tries: {type(exc).__name__}", flush=True)
+                return False
+            time.sleep(2.0 * (attempt + 1))
+    return False
 
 
-def run(limit: int, types: list[str] | None, model: str) -> None:
+def snapshot(model, by_type, detail, latency) -> dict:
+    """The report as it stands. Written after every answer, not just at the end.
+
+    A full run is hours of paid model calls, and this used to be written once
+    after the last one -- so a run stopped at hour five produced nothing at
+    all, and the only way to get a number was to let the whole thing finish
+    uninterrupted. Every partial run is now a usable measurement of however
+    many questions it got through.
+    """
+    return {
+        "model": model,
+        "answers": len(detail),
+        "facts": sum(b["facts"] for b in by_type.values()),
+        "supported": sum(b["supported"] for b in by_type.values()),
+        "perfect": sum(b["perfect"] for b in by_type.values()),
+        "median_seconds": round(statistics.median(latency), 1) if latency else 0,
+        "complete": False,
+        "by_type": {t: dict(b) for t, b in by_type.items()},
+        "detail": detail,
+    }
+
+
+def run(limit: int, types: list[str] | None, model: str, resume: bool = False) -> None:
     asker = Asker()
     pool = [g for g in load_gold() if g.get("answer_facts")]
     if types:
@@ -82,24 +122,69 @@ def run(limit: int, types: list[str] | None, model: str) -> None:
     per = max(1, limit // max(len(buckets), 1))
     graded = [row for rows in buckets.values() for row in rows[:per]]
 
-    print(f"grading {len(graded)} answers across {len(buckets)} types\n", flush=True)
-
     by_type: dict[str, dict[str, float]] = defaultdict(
         lambda: {"n": 0, "facts": 0, "supported": 0, "perfect": 0, "abstained": 0}
     )
     detail: list[dict] = []
     latency: list[float] = []
 
+    # `--resume` picks up an interrupted run rather than re-paying for every
+    # answer it already graded.
+    done: set[str] = set()
+    if resume and REPORT.exists():
+        try:
+            prior = json.loads(REPORT.read_text())
+            detail = prior.get("detail", [])
+            done = {row["question_id"] for row in detail if not row.get("error")}
+            for row in detail:
+                bucket = by_type[row["type"]]
+                bucket["n"] += 1
+                bucket["facts"] += row["facts"]
+                bucket["supported"] += row["supported"]
+                bucket["perfect"] += row["supported"] == row["facts"]
+                bucket["abstained"] += row.get("abstained", 0)
+                latency.append(row.get("seconds", 0))
+            print(f"resuming — {len(done)} already graded", flush=True)
+        except Exception:
+            detail, done, latency = [], set(), []
+    graded = [row for row in graded if row["question_id"] not in done]
+
+    print(f"grading {len(graded)} answers across {len(buckets)} types\n", flush=True)
+
     for i, row in enumerate(graded, start=1):
         question = row["question"]
         qtype = row.get("question_type", "unknown")
         t0 = time.time()
-        try:
-            written = asker.ask(question).text
-        except Exception as exc:
-            written = ""
-            print(f"  [{i}] pipeline error: {type(exc).__name__}: {exc}", flush=True)
+        written, failed = "", False
+        # A network blip while answering used to be caught and scored as an
+        # empty answer -- zero facts supported, indistinguishable from a
+        # genuine miss. That is exactly how a rate-limited run comes back
+        # looking like a bad system. Retry, and if it still fails, mark the row
+        # so it is re-run on the next `--resume` rather than counted.
+        for attempt in range(3):
+            try:
+                written = asker.ask(question).text
+                break
+            except Exception as exc:
+                if attempt == 2:
+                    failed = True
+                    print(f"  [{i}] pipeline error: {type(exc).__name__}: {exc}",
+                          flush=True)
+                else:
+                    time.sleep(2.0 * (attempt + 1))
         latency.append(time.time() - t0)
+        # An empty answer is a broken pipeline, not an abstention. When the
+        # model account runs out of quota the request does not raise -- the
+        # answer path catches it, degrades, and returns "". Scored as written
+        # that is zero facts supported, which is indistinguishable from a
+        # system that answered and got everything wrong. It is how a run comes
+        # back reporting 0% on six categories that measured 60% and 100% an
+        # hour earlier. A genuine abstention says so in words and is not empty.
+        if not written.strip():
+            failed = True
+            print(f"  [{i}] empty answer — pipeline degraded, not scored", flush=True)
+        if failed:
+            continue
 
         facts = row["answer_facts"]
         supported = sum(judge(fact, written, model) for fact in facts) if written else 0
@@ -117,6 +202,9 @@ def run(limit: int, types: list[str] | None, model: str) -> None:
                 "facts": len(facts),
                 "supported": supported,
                 "seconds": round(latency[-1], 1),
+                "abstained": int(
+                    answer_module.NOT_FOUND in written or not written.strip()
+                ),
             }
         )
         print(
@@ -124,11 +212,16 @@ def run(limit: int, types: list[str] | None, model: str) -> None:
             f"  {latency[-1]:5.1f}s",
             flush=True,
         )
+        # Checkpoint. Cheap next to the model call that produced the row, and
+        # the difference between a stopped run being a measurement and being
+        # nothing.
+        STATE.mkdir(parents=True, exist_ok=True)
+        REPORT.write_text(json.dumps(snapshot(model, by_type, detail, latency), indent=2))
 
     total_facts = sum(b["facts"] for b in by_type.values())
     total_supported = sum(b["supported"] for b in by_type.values())
     total_perfect = sum(b["perfect"] for b in by_type.values())
-    n = len(graded)
+    n = len(detail)
 
     print(f"\n{'='*72}")
     print(f"  answers graded            {n:>6}")
@@ -147,15 +240,9 @@ def run(limit: int, types: list[str] | None, model: str) -> None:
               f"{b['abstained']/max(b['n'],1):>9.0%}")
 
     STATE.mkdir(parents=True, exist_ok=True)
-    REPORT.write_text(json.dumps(
-        {
-            "model": model, "answers": n,
-            "facts": total_facts, "supported": total_supported,
-            "perfect": total_perfect,
-            "median_seconds": round(statistics.median(latency), 1),
-            "by_type": {t: dict(b) for t, b in by_type.items()},
-            "detail": detail,
-        }, indent=2))
+    final = snapshot(model, by_type, detail, latency)
+    final["complete"] = True
+    REPORT.write_text(json.dumps(final, indent=2))
     print(f"\n  wrote {REPORT}")
 
 
@@ -164,11 +251,14 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=33, help="answers to grade")
     ap.add_argument("--types", help="comma-separated question types")
     ap.add_argument("--model", default=None, help="judge model")
+    ap.add_argument("--resume", action="store_true",
+                    help="continue an interrupted run instead of restarting")
     args = ap.parse_args()
     run(
         args.limit,
         args.types.split(",") if args.types else None,
         args.model or answer_module.ADJUDICATION_MODEL,
+        args.resume,
     )
 
 

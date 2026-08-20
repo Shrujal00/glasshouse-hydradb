@@ -250,15 +250,23 @@ def claim_blast(claim_id: str, limit: int = 60) -> dict:
 
 @app.get("/api/claims/stats")
 def claim_stats() -> dict:
-    """Size of the contradiction graph, for the header."""
-    out = asker().engine.claim_stats()
-    out["generation"] = _generation()
+    """Size of the contradiction graph, for the header.
+
+    Same reason as `/api/ontology`: `MATCH (a:Claim)-[:CONTRADICTS]->(b:Claim)
+    RETURN count(*)` takes about 17 seconds on this graph, and the header is
+    not worth a 34-second request.
+    """
+    out: dict = {"generation": _generation()}
     try:
         raw = json.loads((STATE / "claims_graph.json").read_text())
+        out.update(raw.get("graph") or {})
         out["work_items"] = raw.get("work_items", 0)
         out["undecided"] = raw.get("undecided", 0)
     except Exception:
-        pass
+        try:
+            out.update(asker().engine.claim_stats())
+        except Exception:
+            pass
     return out
 
 
@@ -291,10 +299,19 @@ def ontology() -> dict:
         }
     except Exception:
         pass
+    # Read from what the loader recorded, not by counting. Counting
+    # relationships costs ~17s per edge type on the loaded graph -- two of
+    # them together blow past any request timeout and the page just hangs.
+    # The graph cannot be written to except by the loader, so the number the
+    # loader wrote is the number, and the engine is only asked when that
+    # record is missing.
     try:
-        out["graph"] = asker().engine.claim_stats()
+        out["graph"] = json.loads((STATE / "claims_graph.json").read_text())["graph"]
     except Exception:
-        pass
+        try:
+            out["graph"] = asker().engine.claim_stats()
+        except Exception:
+            out["graph"] = {}
     # Written out rather than read back from the engine: counting `Entity` or
     # `Document` is the unanchored scan that times out or returns 429, so the
     # sizes come from the loaders that wrote them.

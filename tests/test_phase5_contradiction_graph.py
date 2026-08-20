@@ -416,3 +416,72 @@ def test_an_undated_rival_is_named_as_the_reason_it_lost():
     conflict = result.conflicts[0]
     if conflict.decided:
         assert "no date" in conflict.rationale
+
+
+def test_the_graph_groups_sides_the_way_arbitration_decided_them():
+    """The loader used to re-bucket values with its own copy of the grouping
+    rule and skip the fold, so `liam` and `liam + maria` were written as two
+    opposing sides with a CONTRADICTS edge between them — while arbitration had
+    already folded them into one position. The graph then recorded a conflict
+    its own verdict did not believe in."""
+    rows = build(
+        claim("liam", predicate="owner", subject="ENG-4824",
+              doc_id="d1", source="slack"),
+        claim("liam + maria", predicate="owner", subject="ENG-4824",
+              doc_id="d1", source="slack"),
+        claim("Sofia/Lena", predicate="owner", subject="ENG-4824",
+              doc_id="d2", source="google_drive"),
+    )
+    node = rows["disagreements"][0]
+    assert node["sides"] == 2, "liam and liam + maria are one position"
+    # And nothing may contradict a claim on its own side.
+    sides = {}
+    for row in rows["over"]:
+        sides[row["dst"]] = row["side"]
+    for row in rows["contradicts"]:
+        assert sides[row["src"]] != sides[row["dst"]]
+
+
+def test_arbitration_does_not_depend_on_the_order_claims_arrive_in():
+    """The same claims must arbitrate the same way however retrieval ordered
+    them.
+
+    Two values extracted from the *same* document score identical trust and
+    carry the same doc id, so `merged` and `done` tied and the sort fell
+    through to dict insertion order — which is arrival order. No disagreement
+    ever flipped between settled and refused, but the candidate shown for a
+    refused one changed between runs, and a panel that renames its own
+    candidate on reload cannot be told apart from one that is guessing.
+    """
+    import random
+
+    from glasshouse.trust import arbitrate, subject_key
+
+    claims = [
+        claim("merged", predicate="status", subject="PR-511",
+              doc_id="d1", source="github", date="2026-02-01"),
+        claim("done", predicate="status", subject="PR-511",
+              doc_id="d1", source="github", date="2026-02-01"),
+        claim("in review", predicate="status", subject="PR-511",
+              doc_id="d2", source="linear", date="2026-02-01"),
+        claim("20%", doc_id="d3", source="confluence"),
+        claim("30%", doc_id="d4", source="slack"),
+    ]
+
+    def snapshot(rows):
+        return {
+            (c.scope, subject_key(c.subject), c.predicate): (
+                c.winner.object_value,
+                c.decided,
+                c.rationale,
+                tuple(loser.object_value for loser in c.losers),
+            )
+            for c in arbitrate(rows).conflicts
+        }
+
+    reference = snapshot(claims)
+    assert reference
+    for seed in range(8):
+        shuffled = claims[:]
+        random.Random(seed).shuffle(shuffled)
+        assert snapshot(shuffled) == reference

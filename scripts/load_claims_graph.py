@@ -453,9 +453,17 @@ def build(
         key = _disagreement_key(conflict.scope, conflict.subject, conflict.predicate)
         anchor = node_id(f"disagreement:{key}")
 
-        by_value: dict[str, list[extraction.Claim]] = defaultdict(list)
+        # Grouped exactly the way arbitration grouped, fold included. This
+        # used to re-bucket on `_value` alone, which quietly disagreed with
+        # the decision it was recording: `liam` and `liam + maria` came out as
+        # two opposing sides with a CONTRADICTS edge between them, while
+        # arbitration had already folded them into one position. A second
+        # implementation of a grouping rule is a second chance to drift from
+        # it, so this calls the same one.
+        raw: dict[str, list[extraction.Claim]] = defaultdict(list)
         for claim in members:
-            by_value[trust._value(claim)].append(claim)
+            raw[trust._value(claim)].append(claim)
+        by_value = trust._fold(raw)
         sources = sorted({claim.source for claim in members if claim.source})
         dates = sorted(d for d in (claim.asserted_at for claim in members) if d)
         runner = conflict.losers[0]

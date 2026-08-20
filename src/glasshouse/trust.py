@@ -280,7 +280,14 @@ def _fold(by_value: dict[str, list[Claim]]) -> dict[str, list[Claim]]:
     `resolved` is a status, `resolved after identifying a transient spike` is
     a status plus a sentence about why.
     """
-    keys = sorted(by_value, key=len)
+    # Sorted by length *and then by the value itself*. Length alone leaves
+    # ties broken by dict insertion order, which is the order the claims
+    # happened to arrive in -- so the same corpus folded onto a different
+    # canonical value depending on what retrieval returned first, and the
+    # candidate shown for a refused disagreement changed between runs. The
+    # arithmetic was never affected, but a panel that renames its own
+    # candidate on reload is indistinguishable from one that is guessing.
+    keys = sorted(by_value, key=lambda k: (len(k), k))
     canonical: dict[str, str] = {}
     for key in keys:
         canonical[key] = next(
@@ -432,14 +439,31 @@ def arbitrate(claims: Sequence[Claim]) -> Arbitration:
                 for claim in holders
             ]
         # Deterministic order everywhere: trust, then the later assertion, then
-        # the document id, so the same claims never arbitrate two ways. Three
-        # stable sorts rather than one key, because the middle field wants
-        # descending order and the others ascending.
+        # the document id, then the claim itself. Three stable sorts rather
+        # than one key, because the middle field wants descending order and
+        # the others ascending.
+        #
+        # Every one of these tiers has to end in something unique or the sort
+        # falls through to dict insertion order, which is the order the claims
+        # happened to arrive in. That is exactly what went wrong: two values
+        # extracted from the *same* document score identical trust and carry
+        # the same doc id, so `merged` and `done` tied, and which one the panel
+        # showed as the candidate changed between runs. The arithmetic never
+        # moved -- no disagreement ever flipped between settled and refused --
+        # but a panel that renames its own candidate on reload cannot be told
+        # apart from one that is guessing, which is the whole thing this
+        # module exists to avoid.
         for holders in scored.values():
+            holders.sort(key=lambda c: c.claim_id)
             holders.sort(key=lambda c: c.doc_id)
             holders.sort(key=lambda c: c.asserted_at, reverse=True)
             holders.sort(key=lambda c: c.trust, reverse=True)
-        ranked = sorted(scored.values(), key=lambda hs: (-hs[0].trust, hs[0].doc_id))
+        ranked = [
+            holders
+            for _, holders in sorted(
+                scored.items(), key=lambda kv: (-kv[1][0].trust, kv[1][0].doc_id, kv[0])
+            )
+        ]
 
         if len(ranked) == 1:
             settled.extend(ranked[0])

@@ -18,3 +18,10 @@ data/state/
 
 # Internal design docs — restored to the repo at submission (Aug 20)
 docs/superpowers/
+
+# Video work for the submission: sources and renders are kept on disk, but
+# `remotion-hydradb/node_modules` alone is 534 MB and none of it is source.
+web/videos/
+web/.agents/
+web/.media/
+package-lock.json

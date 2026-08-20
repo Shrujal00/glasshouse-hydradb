@@ -485,3 +485,41 @@ def test_arbitration_does_not_depend_on_the_order_claims_arrive_in():
         shuffled = claims[:]
         random.Random(seed).shuffle(shuffled)
         assert snapshot(shuffled) == reference
+
+
+def test_a_claim_reaches_a_person_through_whichever_end_names_one():
+    """`owner of ENG-4824 = "liam"` names Liam in the *value*, not the subject.
+
+    Resolving only subjects left the two halves of the product unjoined — 57
+    ABOUT edges over 875 claims, and not one disagreement that named anybody,
+    so the ontology and the disagreement map could not be walked between.
+    """
+    rows = build(
+        claim("liam", subject="ENG-4824", predicate="owner",
+              doc_id="d1", source="confluence"),
+        claim("priya", subject="ENG-4824", predicate="owner",
+              doc_id="d2", source="slack"),
+        people={"liam": ("ent_liam", "Liam Byrne"),
+                "priya": ("ent_priya", "Priya Nair")},
+    )
+    assert {row["dst"] for row in rows["about"]} == {
+        node_id("entity:ent_liam"), node_id("entity:ent_priya")
+    }
+    # And the disagreement itself points at the person it concerns, so the UI
+    # can offer "who is this?" as one more hop.
+    assert rows["disagreements"][0]["entity_eid"] in {"ent_liam", "ent_priya"}
+
+
+def test_a_claim_gets_one_about_edge_not_two():
+    """When both ends resolve, the value wins for a person-valued predicate —
+    but only one edge is written, or corroboration counts double."""
+    rows = build(
+        claim("liam", subject="jordan", predicate="owner", doc_id="d1"),
+        claim("priya", subject="jordan", predicate="owner", doc_id="d2", source="slack"),
+        people={"liam": ("ent_liam", "Liam"), "priya": ("ent_priya", "Priya"),
+                "jordan": ("ent_jordan", "Jordan")},
+    )
+    per_claim = {}
+    for row in rows["about"]:
+        per_claim[row["src"]] = per_claim.get(row["src"], 0) + 1
+    assert per_claim and max(per_claim.values()) == 1

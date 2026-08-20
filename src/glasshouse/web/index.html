@@ -409,6 +409,30 @@
     border:1px solid var(--edge); border-radius:2px; padding:3px 8px}
   .form-chip em{font-style:normal; color:var(--trace); opacity:.8; font-size:9px;
     margin-left:5px; letter-spacing:.04em}
+  /* What the corpus asserts about a resolved person — the join between the
+     ontology and the contradiction graph, shown on the person rather than
+     made into its own screen. */
+  .claims-for{margin-top:14px}
+  .cf-head{font-family:var(--mono); font-size:9.5px; letter-spacing:.08em;
+    text-transform:uppercase; color:var(--dim); margin-bottom:7px}
+  .cf-row{display:grid; grid-template-columns:78px 1fr auto; gap:10px;
+    padding:5px 0; font-size:12.5px; align-items:baseline;
+    border-top:1px solid rgba(42,33,36,.55)}
+  .cf-row:first-of-type{border-top:none}
+  .cf-p{font-family:var(--mono); font-size:10px; color:var(--trace);
+    text-transform:uppercase; letter-spacing:.05em}
+  .cf-v{color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .cf-s{font-family:var(--mono); font-size:10px; color:var(--dim); white-space:nowrap}
+
+  /* Walking from a disagreement to the person it concerns. */
+  .jump{
+    margin-top:12px; background:transparent; border:1px solid var(--edge);
+    color:var(--slate); font-family:var(--mono); font-size:10.5px;
+    letter-spacing:.05em; padding:5px 11px; border-radius:2px; cursor:pointer;
+    transition:color .12s, border-color .12s;
+  }
+  .jump:hover{color:var(--trace); border-color:var(--trace)}
+
   .why-merged{font-size:11.5px; color:var(--slate); margin-top:10px}
   .why-merged span{color:var(--trace); font-family:var(--mono); font-size:10.5px}
   .ambig{border-left-color:var(--doubt)}
@@ -1342,7 +1366,9 @@ function openDisagreement(key){
     }).join('');
     $('map-detail').innerHTML =
       '<div class="det-head"><div class="k">' + esc(d.scope) + ' · ' +
-        esc(d.predicate) + '</div><h3>' + esc(d.subject) + '</h3>' + why + '</div>' +
+        esc(d.predicate) + '</div><h3>' + esc(d.subject) + '</h3>' + why +
+        (d.entity ? '<button class="jump" data-person="' + esc(d.entity.name) +
+          '">who is ' + esc(d.entity.name) + '? →</button>' : '') + '</div>' +
       '<div class="side"><div class="lbl">' + sides.length +
         ' positions, ' + d.claims.length + ' claims across ' +
         esc(d.sources.join(', ')) + '</div>' +
@@ -1418,6 +1444,15 @@ $('f-open').addEventListener('click', () => {
   renderDisagreements();
 });
 $('map').addEventListener('click', e => {
+  // Walking from a disagreement to the person it is about, without losing
+  // your place: the ontology opens already asking about them.
+  const jump = e.target.closest('[data-person]');
+  if (jump){
+    showView('ont');
+    $('who-q').value = jump.dataset.person;
+    resolveWho(jump.dataset.person);
+    return;
+  }
   const hist = e.target.closest('[data-history]');
   if (hist) { showHistory(hist.dataset.history); return; }
   const blast = e.target.closest('[data-blast]');
@@ -1499,11 +1534,30 @@ function resolveWho(text){
             signals.map(x => '<span>' + esc(x.toLowerCase().replace(/_/g, " ")) +
             '</span>').join(', ') + ' — hover any form to see its own</div>'
           : '') +
+        '<div class="claims-for" id="cf-' + esc(p.eid) + '"></div>' +
         '</div>';
     }).join('') + (w.ambiguous
       ? '<div class="det-empty">this form reaches ' + w.denotes + ' people — ' +
         'it has not named anybody, so nothing is resolved</div>' : '');
+    // The other half of the product: once you know who somebody is, the
+    // contradiction graph knows what is asserted about them. Without this the
+    // ontology and the disagreements read as two separate demos.
+    w.people.forEach(person => claimsFor(person.eid));
   }).catch(() => { box.innerHTML = '<div class="det-empty">lookup failed</div>'; });
+}
+
+function claimsFor(eid){
+  const box = document.getElementById('cf-' + eid);
+  if (!box) return;
+  fetch('/api/entity/' + encodeURIComponent(eid) + '/claims').then(r => r.json()).then(d => {
+    if (!d.claims || !d.claims.length) return;   // silence beats an empty heading
+    box.innerHTML = '<div class="cf-head">what the corpus asserts about them</div>' +
+      d.claims.slice(0, 8).map(c =>
+        '<div class="cf-row"><span class="cf-p">' + esc(c.predicate) + '</span>' +
+        '<span class="cf-v">' + esc(c.value) + '</span>' +
+        '<span class="cf-s">' + esc(c.source) + (c.date ? ', ' + esc(c.date) : '') +
+        '</span></div>').join('');
+  }).catch(()=>{});
 }
 
 $('who-form').addEventListener('submit', e => {

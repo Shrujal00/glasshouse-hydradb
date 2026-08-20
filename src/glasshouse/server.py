@@ -193,6 +193,8 @@ def disagreement(key: str) -> dict:
         # must not draw that as a verdict -- refusing is a result, and dressing
         # it as a winner is the exact failure the trust floor exists to stop.
         "winner_claim_id": head.winner_claim_id if head.decided else None,
+        "entity": {"eid": head.entity_eid, "name": head.entity_name}
+        if head.entity_eid else None,
         "claims": [
             {
                 "claim_id": c.claim_id,
@@ -245,6 +247,37 @@ def claim_blast(claim_id: str, limit: int = 60) -> dict:
         "claim_id": claim_id,
         "people": reached,
         "documents": sorted({r["doc_id"] for r in reached}),
+    }
+
+
+@app.get("/api/entity/{eid}/claims")
+def entity_claims(eid: str, limit: int = 30) -> dict:
+    """Every claim wired to one person, through `ABOUT`.
+
+    This is the join between the two halves of the product. The ontology knows
+    who someone is; the contradiction graph knows what is asserted about them.
+    Until now nothing walked from one to the other, so they read as two
+    separate demos rather than one system.
+    """
+    found = asker().engine.claims_about(eid, limit=limit)
+    return {
+        "eid": eid,
+        "claims": [
+            {
+                "claim_id": c.claim_id,
+                "scope": c.scope,
+                "subject": c.subject,
+                "predicate": c.predicate,
+                "value": c.object_value,
+                "source": c.source,
+                "date": c.asserted_at,
+                "trust": round(c.trust, 3),
+                "status": c.status,
+                "title": c.title,
+                "doc_id": c.doc_id,
+            }
+            for c in found
+        ],
     }
 
 

@@ -112,6 +112,12 @@ WRITE_RETRIES = 3
 DOCS_PER_KEY = 9
 DOCS_PER_SOURCE = 3
 
+# Predicates whose *value* is a person rather than a thing. `owner of ENG-4824
+# = "liam"` names Liam in the object, not the subject -- so resolving only
+# subjects against the ontology left the two halves of the product unjoined:
+# 57 ABOUT edges over 875 claims, and not one disagreement that named anybody.
+PERSON_VALUED = ("owner", "reports_to")
+
 # Reviewed artefacts first, so that when a work item has more documents than it
 # is allowed the ones that survive are the ones a person would check.
 SOURCE_ORDER = (
@@ -426,15 +432,23 @@ def build(
                 "dst": node_id(f"doc:{claim.doc_id}"),
             }
         )
-        named = people.get(claim.subject)
-        if named:
+        # A claim reaches a person through whichever end names one. `owner`
+        # and `reports_to` name them in the value; everything else, if at all,
+        # in the subject.
+        for who in (
+            people.get(claim.object_value) if claim.predicate in PERSON_VALUED else None,
+            people.get(claim.subject),
+        ):
+            if not who:
+                continue
             rows["about"].append(
                 {
                     "src": node_id(f"claim:{claim.claim_id}"),
-                    "dst": node_id(f"entity:{named[0]}"),
+                    "dst": node_id(f"entity:{who[0]}"),
                     "predicate": claim.predicate,
                 }
             )
+            break
 
     for claim in arbitration.claims:
         claim_row(claim)
@@ -509,7 +523,14 @@ def build(
                     }
                 )
 
-        named = people.get(conflict.winner.subject) or people.get(runner.subject)
+        named = (
+            (people.get(conflict.winner.object_value)
+             if conflict.predicate in PERSON_VALUED else None)
+            or (people.get(runner.object_value)
+                if conflict.predicate in PERSON_VALUED else None)
+            or people.get(conflict.winner.subject)
+            or people.get(runner.subject)
+        )
         contested = min(conflict.winner.trust, runner.trust)
         rows["disagreements"].append(
             {
@@ -723,9 +744,13 @@ def run(args: argparse.Namespace) -> None:
         raise SystemExit("engine not reachable; is `docker compose up -d` running?")
 
     print("resolving subjects against the identity graph ...", flush=True)
-    subjects = sorted({claim.subject for claim in arbitration.claims})
+    subjects = sorted(
+        {claim.subject for claim in arbitration.claims}
+        | {c.object_value for c in arbitration.claims if c.predicate in PERSON_VALUED}
+    )
     people = resolve_subjects(engine, subjects) if not args.no_resolve else {}
-    print(f"  {len(people):,}/{len(subjects):,} subjects name somebody the ontology knows")
+    print(f"  {len(people):,}/{len(subjects):,} subjects and owner-values name "
+          f"somebody the ontology knows")
 
     titles = {
         doc.doc_id: doc.title

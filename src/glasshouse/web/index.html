@@ -409,8 +409,8 @@
   </nav>
   <div class="counts">
     <div><b id="c-docs">—</b> <i>documents</i></div>
-    <div><b id="c-alias">—</b> <i>surface forms</i></div>
-    <div><b id="c-coll">—</b> <i>resolved people</i></div>
+    <div><b id="c-alias">—</b> <i>written forms</i></div>
+    <div><b id="c-coll">—</b> <i>people</i></div>
     <div id="c-dis-wrap" hidden><b id="c-dis">—</b> <i>disagreements</i></div>
   </div>
 </header>
@@ -535,6 +535,11 @@ const reheat = (v = 0.85) => { alpha = Math.max(alpha, v); };
 
 function resize(){
   const r = cv.parentElement.getBoundingClientRect();
+  // A hidden parent measures 0x0, and a zero-width backing store stretched by
+  // `width:100%` renders as one enormous smeared pixel. The ask view is no
+  // longer the landing screen, so this now runs while it is hidden and has to
+  // decline rather than destroy the canvas it cannot measure.
+  if (!r.width || !r.height) return;
   W = r.width; H = r.height;
   cv.width = W * DPR; cv.height = H * DPR;
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
@@ -1139,7 +1144,7 @@ fetch('/api/stats').then(r => r.json()).then(s => {
   const fmt = n => (n||0).toLocaleString();
   $('c-docs').textContent = fmt(s.documents);
   $('c-alias').textContent = fmt(s.aliases);
-  $('c-coll').textContent = fmt(s.collapsed);
+  $('c-coll').textContent = fmt(s.entities);
 }).catch(()=>{});
 
 // ── the disagreement map ─────────────────────────────────────────────────
@@ -1162,6 +1167,9 @@ function showView(which){
   $('c-dis-wrap').hidden = which !== 'map';
   if (which === 'map' && !disRows.length) loadDisagreements();
   if (which === 'ont') loadOntology();
+  // The canvas could not measure itself while it was hidden, so it takes its
+  // size at the moment it becomes visible instead.
+  if (ask) requestAnimationFrame(() => { resize(); reheat(0.4); });
 }
 
 function loadDisagreements(){

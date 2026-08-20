@@ -260,3 +260,115 @@ def claim_stats() -> dict:
     except Exception:
         pass
     return out
+
+
+# --- the ontology -----------------------------------------------------------
+
+
+@app.get("/api/ontology")
+def ontology() -> dict:
+    """What the ontology is, and what building it cost.
+
+    Track 01 asks for an ontology, and until now the only way to see one was
+    to read `resolve_stats.json` off disk. The single most telling number in
+    there is `merges_refused_by_constraint`: the resolver refused nearly four
+    times more merges than it made, which is the difference between an
+    ontology and a pile of string-similarity guesses.
+    """
+    out: dict = {"schema": [], "resolve": {}, "graph": {}}
+    try:
+        raw = json.loads((STATE / "resolve_stats.json").read_text())
+        out["resolve"] = {
+            key: raw.get(key)
+            for key in (
+                "raw_surfaces", "surfaces", "candidate_pairs",
+                "pairs_above_threshold", "merges_applied",
+                "merges_refused_by_constraint", "entities",
+                "multi_alias_entities", "shared_mailboxes_excluded",
+                "threshold", "min_occurrences", "resolve_seconds", "docs",
+            )
+            if raw.get(key) is not None
+        }
+    except Exception:
+        pass
+    try:
+        out["graph"] = asker().engine.claim_stats()
+    except Exception:
+        pass
+    # Written out rather than read back from the engine: counting `Entity` or
+    # `Document` is the unanchored scan that times out or returns 429, so the
+    # sizes come from the loaders that wrote them.
+    resolved = out["resolve"]
+    out["schema"] = [
+        {"pattern": "(:Surface)-[:DENOTES]->(:Entity)",
+         "count": resolved.get("surfaces"),
+         "note": "a word from a question, resolved in one hop"},
+        {"pattern": "(:Alias)-[:RESOLVES_TO {score, signals}]->(:Entity)",
+         "count": resolved.get("merges_applied"),
+         "note": "every accepted merge, with the evidence for it"},
+        {"pattern": "(:Entity)-[:MENTIONED_IN|SPOKE_IN|SENT]->(:Document)",
+         "count": resolved.get("docs"),
+         "note": "who is named in, spoke in, or sent each document"},
+        {"pattern": "(:Document)-[:IN_CONTAINER]->(:Container)",
+         "count": 978512,
+         "note": "the channel, folder or space a document lives in"},
+        {"pattern": "(:Claim)-[:CONTRADICTS]->(:Claim)",
+         "count": out["graph"].get("contradicts"),
+         "note": "two documents asserting different values for one thing"},
+        {"pattern": "(:Claim)-[:SUPERSEDES]->(:Claim)",
+         "count": out["graph"].get("supersedes"),
+         "note": "the value that replaced an earlier one, and when"},
+    ]
+    return out
+
+
+@app.get("/api/who/{text}")
+def who(text: str) -> dict:
+    """Who one written form denotes — the identity traversal, exposed.
+
+    This is `Surface -[:DENOTES]-> Entity` and nothing else: one anchored hop
+    on a node id derived from the word itself. A form reaching more than one
+    person has not named anybody, and that is reported rather than resolved,
+    because picking one would be the guess the whole resolver exists to avoid.
+    """
+    current = asker()
+    matches = current.engine.denoted_by(text, limit=8)
+    people = []
+    for match in matches:
+        aliases = []
+        try:
+            rows = current.engine.query(
+                "MATCH (a:Alias)-[r:RESOLVES_TO]->(e:Entity {id: $id}) "
+                "RETURN a.surface AS surface, a.kind AS kind, "
+                "a.occurrences AS occurrences, r.score AS score, "
+                "r.signals AS signals ORDER BY occurrences DESC",
+                {"id": node_id(f"entity:{match.eid}")},
+                strong=True,
+            )
+            aliases = [
+                {
+                    "surface": r.values.get("surface"),
+                    "kind": r.values.get("kind"),
+                    "occurrences": r.values.get("occurrences"),
+                    "score": r.values.get("score"),
+                    "signals": r.values.get("signals"),
+                }
+                for r in rows
+            ]
+        except Exception:
+            pass
+        people.append({
+            "eid": match.eid,
+            "name": match.name,
+            "confidence": round(match.confidence, 3),
+            "alias_count": match.alias_count,
+            "written_as": [a for a in aliases if a.get("surface")],
+        })
+    return {
+        "text": text,
+        "denotes": len(matches),
+        # The ambiguity guard, said plainly. `sam` reaches eight people in this
+        # corpus and none of them has been named.
+        "ambiguous": len(matches) > 1 or (matches[0].entities > 1 if matches else False),
+        "people": people,
+    }

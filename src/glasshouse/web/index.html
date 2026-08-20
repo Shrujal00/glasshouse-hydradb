@@ -182,6 +182,12 @@
   .gdoc .hop{font-family:var(--mono); font-size:10px; color:var(--evidence); flex:none}
   .gdoc .t{color:var(--slate); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
   .nograph{font-size:12px; color:var(--dim)}
+  /* The one number that makes the graph's contribution obvious: how much of
+     the corpus one anchored hop removed. Given its own scale because a ratio
+     buried in a trace line is a ratio nobody reads. */
+  .won{border-left:2px solid var(--trace); padding:2px 0 2px 12px; margin:2px 0 12px}
+  .won-n{font-family:var(--mono); font-size:19px; color:var(--trace); letter-spacing:-.02em}
+  .won-t{font-size:11.5px; color:var(--slate); margin-top:2px}
   .conn{font-family:var(--mono); font-size:11.5px; color:var(--slate); padding:5px 0}
   .conn b{color:var(--ink); font-weight:500}
   .conn .via{color:var(--evidence)}
@@ -322,6 +328,63 @@
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
   .blast .note{font-size:11.5px; color:var(--slate); margin-bottom:8px}
 
+  /* ── the ontology ─────────────────────────────────────── */
+  #ont{flex:1; overflow-y:auto; min-height:0}
+  #ont[hidden]{display:none}
+  #ont-body{max-width:840px; margin:0 auto; padding:0 4px 60px}
+
+  /* The funnel. Four numbers, and the one that matters is the last: the
+     resolver refused nearly four times more merges than it made. That ratio
+     is what separates an ontology from string similarity, so it gets its own
+     line and its own colour rather than sitting in a stats table. */
+  .funnel{display:grid; gap:1px; padding:18px 22px 6px}
+  .fstep{display:grid; grid-template-columns:132px 1fr; gap:14px;
+    align-items:baseline; padding:7px 0}
+  .fstep .fn{font-family:var(--mono); font-size:20px; color:var(--ink);
+    text-align:right; letter-spacing:-.02em}
+  .fstep .ft{font-size:12.5px; color:var(--slate)}
+  .fstep.keep .fn{color:var(--trace)}
+  .fstep.drop .fn{color:var(--doubt)}
+  .fstep .ft b{color:var(--ink); font-weight:500}
+
+  .ont-try{padding:20px 22px; border-top:1px solid var(--edge)}
+  .lbl{font-family:var(--mono); font-size:9.5px; letter-spacing:.09em;
+    text-transform:uppercase; color:var(--dim); margin-bottom:9px}
+  #who-form{display:flex; gap:10px; padding:0; border:none; align-items:center}
+  #who-form input{flex:1}
+  #who-form button{
+    background:transparent; border:1px solid var(--edge); color:var(--slate);
+    font-family:var(--mono); font-size:11px; letter-spacing:.06em; padding:6px 13px;
+    border-radius:2px; cursor:pointer; text-transform:uppercase;
+  }
+  #who-form button:hover{color:var(--trace); border-color:var(--trace)}
+  .ont-eg{display:flex; gap:8px; margin-top:10px; flex-wrap:wrap}
+  .ont-eg code{font-family:var(--mono); font-size:11px; color:var(--slate);
+    border:1px solid var(--edge); padding:2px 8px; border-radius:2px; cursor:pointer}
+  .ont-eg code:hover{color:var(--trace); border-color:var(--trace)}
+
+  .person-card{margin-top:18px; border-left:2px solid var(--trace); padding-left:14px}
+  .person-card .nm{font-size:15px; color:var(--ink)}
+  .person-card .sub{font-family:var(--mono); font-size:10.5px; color:var(--dim); margin-top:3px}
+  .forms{display:flex; flex-wrap:wrap; gap:6px; margin-top:11px}
+  .form-chip{font-family:var(--mono); font-size:11px; color:var(--slate);
+    border:1px solid var(--edge); border-radius:2px; padding:3px 8px}
+  .form-chip em{font-style:normal; color:var(--trace); opacity:.8; font-size:9px;
+    margin-left:5px; letter-spacing:.04em}
+  .why-merged{font-size:11.5px; color:var(--slate); margin-top:10px}
+  .why-merged span{color:var(--trace); font-family:var(--mono); font-size:10.5px}
+  .ambig{border-left-color:var(--doubt)}
+  .ambig .nm{color:var(--doubt)}
+
+  .ont-schema{padding:20px 22px; border-top:1px solid var(--edge)}
+  .srow{display:grid; grid-template-columns:96px 1fr; gap:14px; padding:7px 0;
+    align-items:baseline; border-top:1px solid rgba(42,33,36,.55)}
+  .srow:first-of-type{border-top:none}
+  .srow .sn{font-family:var(--mono); font-size:12px; color:var(--trace); text-align:right}
+  .srow .sp{font-family:var(--mono); font-size:11.5px; color:var(--ink);
+    overflow-x:auto; white-space:nowrap}
+  .srow .so{font-size:11.5px; color:var(--dim); margin-top:2px; white-space:normal}
+
   @media (max-width:900px){
     #map{grid-template-columns:1fr; grid-template-rows:1fr 46vh}
     #map-detail{border-left:none; border-top:1px solid var(--edge)}
@@ -340,8 +403,9 @@
   <div class="wordmark">glass<span>house</span></div>
   <div class="tagline">who is who, and how do we know</div>
   <nav class="views">
-    <button id="v-ask" aria-selected="true">ask</button>
-    <button id="v-map" aria-selected="false">disagreements</button>
+    <button id="v-map" aria-selected="true">disagreements</button>
+    <button id="v-ont" aria-selected="false">the ontology</button>
+    <button id="v-ask" aria-selected="false">ask a question</button>
   </nav>
   <div class="counts">
     <div><b id="c-docs">—</b> <i>documents</i></div>
@@ -351,14 +415,14 @@
   </div>
 </header>
 
-<form id="ask">
+<form id="ask" hidden>
   <span class="prompt">?</span>
   <input id="q" autocomplete="off" spellcheck="false"
          placeholder="ask anything about the corpus…">
   <button id="go" type="submit">trace</button>
 </form>
 
-<main>
+<main hidden>
   <div id="stage">
     <canvas id="cv"></canvas>
     <div id="tip" hidden></div>
@@ -381,7 +445,7 @@
     <div class="block" id="who-block" hidden><h2>who</h2><div id="who"></div></div>
     <div class="block" id="ev-block" hidden><h2>evidence</h2><div id="ev"></div></div>
     <div class="block" id="ab-block" hidden>
-      <h2>retrieval a/b</h2>
+      <h2>what hydradb did</h2>
       <div id="ab"></div>
       <div id="ab-docs"></div>
     </div>
@@ -394,14 +458,14 @@
      offline loader wrote: no question is asked, no document is retrieved and
      no model is called. It is answerable at all because contradiction is an
      edge in HydraDB rather than something recomputed per query. -->
-<section id="map" hidden>
+<section id="map">
   <div id="map-list">
     <div class="map-head">
-      <h1>what this organisation contradicts itself about</h1>
-      <p>every row is one thing two tools state differently, found by reading
-         the work items the most tools quote — not by anyone asking. the graph
-         stores each competing claim, what settled it, and where it refuses to
-         settle.</p>
+      <h1>What this company disagrees with itself about</h1>
+      <p>Nine tools. Half a million documents. Nobody asked a question — these
+         are the things the company has written down two different ways, found
+         by walking the graph. Click one to see who says what, and which side
+         we believe.</p>
     </div>
     <div class="map-filters">
       <button id="f-all" aria-pressed="true">all</button>
@@ -411,6 +475,44 @@
     <div id="dis-rows"></div>
   </div>
   <div id="map-detail"><div class="det-empty">select a disagreement.</div></div>
+</section>
+
+<!-- The ontology. Everything here is read from the graph or from the record
+     the resolver wrote when it built it. The funnel is the point: what makes
+     this an ontology rather than string matching is how much it threw away. -->
+<section id="ont" hidden>
+  <div id="ont-body">
+    <div class="map-head">
+      <h1>One company, nine tools, and everybody named four different ways</h1>
+      <p>People appear as a handle in Slack, a full name in Confluence and
+         three different email addresses in Gmail. Before you can answer
+         anything you have to know those are one person — and, just as
+         importantly, when they are <em>not</em>.</p>
+    </div>
+
+    <div class="funnel" id="funnel"></div>
+
+    <div class="ont-try">
+      <div class="lbl">Try it — type a name or a handle</div>
+      <form id="who-form">
+        <span class="prompt">?</span>
+        <input id="who-q" autocomplete="off" spellcheck="false"
+               placeholder="irene choi">
+        <button type="submit">resolve</button>
+      </form>
+      <div class="ont-eg">
+        <code data-who="irene choi">irene choi</code>
+        <code data-who="stephanie nguyen">stephanie nguyen</code>
+        <code data-who="jordan reyes">jordan reyes</code>
+      </div>
+      <div id="who-out"></div>
+    </div>
+
+    <div class="ont-schema">
+      <div class="lbl">What that becomes in HydraDB</div>
+      <div id="schema"></div>
+    </div>
+  </div>
 </section>
 
 <script>
@@ -810,9 +912,12 @@ function drain(){
   setTimeout(drain, (BEAT[ev.type] ?? 45) * scale);
 }
 
+let matched = 0;   // corpus-wide keyword hits, kept for the narrowing figure
+
 function render(ev){
     switch (ev.type){
       case 'recall':
+        matched = ev.matched || 0;
         // `documents` is the page kept, not the field searched. Showing the
         // page alone read as "only twenty documents were looked at".
         step('ranked the corpus',
@@ -924,22 +1029,18 @@ function render(ev){
           `<div class="gdoc"><span class="hop">${ev.documents} docs</span>` +
           `<span class="t">${esc(ev.name)}</span></div>`);
         break;
-      case 'graph_ablation': {
-        $('ab-block').hidden = false;
-        const most = Math.max(ev.plain, ev.identity, ev.graph, 1);
-        const bar = (label, n, cls) =>
-          `<div class="strategy ${cls}"><span class="who">${label}</span>` +
-          `<span class="bar" style="width:${Math.round(n / most * 108)}px"></span>` +
-          `<span class="n">${n}</span></div>`;
-        $('ab').innerHTML =
-          bar('keyword', ev.plain, '') +
-          bar('identity', ev.identity, '') +
-          bar('graph', ev.graph, 'graph');
-        if (!ev.graph_only)
-          $('ab-docs').insertAdjacentHTML('beforeend',
-            '<div class="nograph">the graph reached no document keyword search missed</div>');
+      case 'graph_ablation':
+        // Deliberately not rendered. This event measures whether *document
+        // retrieval* through the graph beat keyword retrieval, and the
+        // measured answer is no -- person-seeded retrieval opens on 21 of 570
+        // questions and never added a correct document. That is a real
+        // negative result and it is written up in the README. Drawing it here
+        // as `graph 0` beside `keyword 20` told a viewer the graph did
+        // nothing, on a question where the graph had just cut 159,030
+        // candidates to 6. The panel now reports what the graph was actually
+        // used for; the ablation stays in the trace stream for anyone reading
+        // the events.
         break;
-      }
       case 'path':
         $('conn-block').hidden = false;
         $('conn').insertAdjacentHTML('beforeend',
@@ -956,7 +1057,17 @@ function render(ev){
                    (ev.named.length === 1 ? ' container' : ' containers')
                  : 'container scope from the facet table',
                where.slice(0, 58));
-          if (ev.only) step('found only inside that scope', ev.only + ' docs');
+          if (ev.only) {
+            step('found only inside that scope', ev.only + ' docs');
+            if (ev.entrance === 'hydradb' && matched) {
+              $('ab-block').hidden = false;
+              $('ab').insertAdjacentHTML('afterbegin',
+                '<div class="won"><div class="won-n">' +
+                matched.toLocaleString() + ' &rarr; ' + ev.only + '</div>' +
+                '<div class="won-t">documents, after one hop to the ' +
+                esc(ev.named[0].key.split(':').pop()) + ' container</div></div>');
+            }
+          }
         }
         break;
       case 'conflict_found':
@@ -995,7 +1106,10 @@ function render(ev){
         finish();
         break;
       case 'done':
-        step('paths walked by hydradb', ev.paths, ev.ms);
+        // Only reported when there was something to walk. A question naming
+        // no person has no pairs to connect, and printing `0` for a step that
+        // never ran reads as the graph failing rather than as not applying.
+        if (ev.paths) step('paths walked by hydradb', ev.paths, ev.ms);
         finish();
         break;
       case 'degraded':
@@ -1035,17 +1149,19 @@ fetch('/api/stats').then(r => r.json()).then(s => {
 let disRows = [], disOpenOnly = false, disCurrent = null;
 
 function showView(which){
-  const map = which === 'map';
-  $('map').hidden = !map;
-  document.querySelector('main').hidden = map;
-  document.getElementById('ask').hidden = map;
-  $('v-ask').setAttribute('aria-selected', String(!map));
-  $('v-map').setAttribute('aria-selected', String(map));
-  // The claim counts belong to the map, not to the ask view: showing them
+  const ask = which === 'ask';
+  $('map').hidden = which !== 'map';
+  $('ont').hidden = which !== 'ont';
+  document.querySelector('main').hidden = !ask;
+  document.getElementById('ask').hidden = !ask;
+  for (const [id, name] of [['v-map','map'], ['v-ont','ont'], ['v-ask','ask']])
+    $(id).setAttribute('aria-selected', String(which === name));
+  // The claim counts belong to the map, not to the other views: showing them
   // beside the corpus size would read as "the whole corpus is arbitrated",
   // which it is not.
-  $('c-dis-wrap').hidden = !map;
-  if (map && !disRows.length) loadDisagreements();
+  $('c-dis-wrap').hidden = which !== 'map';
+  if (which === 'map' && !disRows.length) loadDisagreements();
+  if (which === 'ont') loadOntology();
 }
 
 function loadDisagreements(){
@@ -1063,6 +1179,23 @@ function loadDisagreements(){
   });
 }
 
+
+// A predicate is a schema word — `owner`, `due_date`. Nobody walks around with
+// those in their head; they walk around with a question. Rendering the
+// question instead of the field name is the whole difference between a screen
+// an engineer can read and one anybody can.
+function asQuestion(predicate, subject){
+  const who = esc(subject);
+  switch (predicate){
+    case 'owner':      return 'Who owns ' + who + '?';
+    case 'status':     return 'What state is ' + who + ' in?';
+    case 'due_date':   return 'When is ' + who + ' due?';
+    case 'limit':      return "What's the limit on " + who + '?';
+    case 'reports_to': return 'Who does ' + who + ' report to?';
+    default:           return esc(predicate) + ' of ' + who;
+  }
+}
+
 function renderDisagreements(){
   const rows = disOpenOnly ? disRows.filter(r => !r.decided) : disRows;
   $('map-count').textContent = rows.length
@@ -1076,29 +1209,27 @@ function renderDisagreements(){
     // The losing value is shown in full and never struck through here: on the
     // map the reader is deciding what to look at, and a value they cannot
     // read is one they have to take on trust.
+    // The verdict is said the way a person would say it, not as a status
+    // enum. "we can't tell" is a real answer and has to read like one.
     const verdict = r.decided
-      ? '<span class="dis-verdict settled">settled</span>'
-      : '<span class="dis-verdict open">refuses to decide</span>';
+      ? '<span class="dis-verdict settled">answered</span>'
+      : '<span class="dis-verdict open">we can\u2019t tell</span>';
     return '<div class="dis" data-key="' + esc(r.key) + '">' +
       '<div class="dis-top">' +
-        '<span class="dis-scope">' + esc(r.scope) + '</span>' +
-        '<span class="dis-pred">' + esc(r.predicate) + '</span>' +
-        '<span class="dis-subj">' + esc(r.subject) + '</span>' + verdict +
+        '<span class="dis-subj">' + asQuestion(r.predicate, r.subject) + '</span>' +
+        verdict +
       '</div>' +
       '<div class="dis-values">' +
-        '<div class="dis-val"><div class="v">' + esc(r.winner.value) + '</div>' +
-          '<div class="m">' + esc(r.winner.source) +
-            ' · trust ' + r.winner.trust.toFixed(2) + '</div></div>' +
-        '<span class="dis-vs">vs</span>' +
+        '<div class="dis-val"><div class="m">' + esc(r.winner.source) + ' says</div>' +
+          '<div class="v">' + esc(r.winner.value) + '</div></div>' +
+        '<span class="dis-vs">but</span>' +
         '<div class="dis-val' + (r.decided ? ' lost' : '') + '">' +
-          '<div class="v">' + esc(r.runner.value) + '</div>' +
-          '<div class="m">' + esc(r.runner.source) +
-            ' · trust ' + r.runner.trust.toFixed(2) + '</div></div>' +
+          '<div class="m">' + esc(r.runner.source) + ' says</div>' +
+          '<div class="v">' + esc(r.runner.value) + '</div></div>' +
       '</div>' +
-      '<div class="dis-foot"><b>' + r.sides + '</b> values · <b>' + r.documents +
-        '</b> documents · ' + esc(r.sources.join(', ')) +
-        (r.first_asserted ? ' · ' + esc(r.first_asserted) + ' → ' +
-          esc(r.last_asserted) : '') + '</div>' +
+      '<div class="dis-foot">' + esc(r.sources.length) + ' tools disagree' +
+        (r.sides > 2 ? ', ' + r.sides + ' different answers' : '') +
+        ' · ' + esc(r.sources.join(', ')) + '</div>' +
     '</div>';
   }).join('');
 }
@@ -1227,7 +1358,97 @@ $('map').addEventListener('click', e => {
   const row = e.target.closest('.dis');
   if (row) openDisagreement(row.dataset.key);
 });
+
+// ── the ontology ─────────────────────────────────────────────────────────
+// Read from the graph and from the record the resolver wrote when it built
+// it. Nothing here calls a model.
+
+let ontLoaded = false;
+
+function loadOntology(){
+  if (ontLoaded) return;
+  ontLoaded = true;
+  fetch('/api/ontology').then(r => r.json()).then(o => {
+    const r = o.resolve || {}, n = v => (v || 0).toLocaleString();
+    // Four steps, ending on the refusals. A resolver that merges everything
+    // similar is a resolver that decides two people are one, and that error
+    // is invisible until it puts the wrong name on an answer.
+    $('funnel').innerHTML =
+      '<div class="fstep"><span class="fn">' + n(r.raw_surfaces) + '</span>' +
+        '<span class="ft">written forms found across <b>' + n(r.docs) +
+        '</b> documents</span></div>' +
+      '<div class="fstep"><span class="fn">' + n(r.candidate_pairs) + '</span>' +
+        '<span class="ft">pairs compared to see which ones are the same person</span></div>' +
+      '<div class="fstep keep"><span class="fn">' + n(r.merges_applied) + '</span>' +
+        '<span class="ft">merges <b>accepted</b> — each one stored with the evidence for it</span></div>' +
+      '<div class="fstep drop"><span class="fn">' + n(r.merges_refused_by_constraint) + '</span>' +
+        '<span class="ft">merges <b>refused</b>, because a hard rule said these two are ' +
+        'not the same person. nearly four times more refused than accepted — ' +
+        'that is the difference between an ontology and string matching</span></div>' +
+      '<div class="fstep"><span class="fn">' + n(r.entities) + '</span>' +
+        '<span class="ft">people and things left, <b>' + n(r.multi_alias_entities) +
+        '</b> of them written more than one way. built in ' +
+        (r.resolve_seconds || 0) + 's</span></div>';
+
+    $('schema').innerHTML = (o.schema || []).map(row =>
+      '<div class="srow"><span class="sn">' +
+        (row.count == null ? '—' : row.count.toLocaleString()) + '</span>' +
+        '<span><span class="sp">' + esc(row.pattern) + '</span>' +
+        '<div class="so">' + esc(row.note) + '</div></span></div>').join('');
+  }).catch(() => { ontLoaded = false; });
+}
+
+function resolveWho(text){
+  const box = $('who-out');
+  box.innerHTML = '<div class="det-empty">one hop in hydradb…</div>';
+  fetch('/api/who/' + encodeURIComponent(text)).then(r => r.json()).then(w => {
+    if (!w.people.length){
+      box.innerHTML = '<div class="person-card ambig"><div class="nm">nobody</div>' +
+        '<div class="sub">no surface node for that form — the ontology has ' +
+        'never seen it written that way</div></div>';
+      return;
+    }
+    // Ambiguity is reported, never resolved away. A form reaching several
+    // people has not named any of them, and picking one would be exactly the
+    // guess the resolver spent 163,262 refusals avoiding.
+    box.innerHTML = w.people.map(p => {
+      // The signal is the evidence for the merge and it rides on the
+      // RESOLVES_TO edge. Without it this is a list of strings somebody
+      // asserted were one person; with it, every row can be checked.
+      const chips = p.written_as.map(a =>
+        '<span class="form-chip" title="' +
+        esc(a.signals || 'no signal recorded') +
+        (a.score != null ? '  ·  score ' + a.score : '') + '">' + esc(a.surface) +
+        (a.kind ? '<em>' + esc(a.kind) + '</em>' : '') + '</span>').join('');
+      const signals = [...new Set(p.written_as.flatMap(
+        a => String(a.signals || '').split('+').filter(Boolean)))];
+      return '<div class="person-card' + (w.ambiguous ? ' ambig' : '') + '">' +
+        '<div class="nm">' + esc(p.name || p.eid) + '</div>' +
+        '<div class="sub">' + p.alias_count + ' written forms collapse onto this ' +
+        'person · one DENOTES hop in hydradb</div>' +
+        '<div class="forms">' + chips + '</div>' +
+        (signals.length
+          ? '<div class="why-merged">each form was merged on recorded evidence — ' +
+            signals.map(x => '<span>' + esc(x.toLowerCase().replace(/_/g, " ")) +
+            '</span>').join(', ') + ' — hover any form to see its own</div>'
+          : '') +
+        '</div>';
+    }).join('') + (w.ambiguous
+      ? '<div class="det-empty">this form reaches ' + w.denotes + ' people — ' +
+        'it has not named anybody, so nothing is resolved</div>' : '');
+  }).catch(() => { box.innerHTML = '<div class="det-empty">lookup failed</div>'; });
+}
+
+$('who-form').addEventListener('submit', e => {
+  e.preventDefault(); resolveWho($('who-q').value);
+});
+$('ont').addEventListener('click', e => {
+  const c = e.target.closest('code[data-who]');
+  if (c) { $('who-q').value = c.dataset.who; resolveWho(c.dataset.who); }
+});
+$('v-ont').addEventListener('click', () => showView('ont'));
 </script>
+
 
 </body>
 </html>

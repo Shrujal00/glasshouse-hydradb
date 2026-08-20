@@ -592,7 +592,16 @@ def build(
 # --- writing ----------------------------------------------------------------
 
 
-def write(engine: GraphEngine, rows: dict[str, list[dict]]) -> None:
+def write(engine: GraphEngine, rows: dict[str, list[dict]]) -> dict[str, int]:
+    """Write everything, and report what was actually written.
+
+    Returned rather than counted afterwards: counting relationships costs 0.1s
+    over a few hundred edges and times out at 30s over eight hundred, and a
+    timed-out count is indistinguishable from a real zero -- which is how a
+    load that wrote 816 CONTRADICTS edges recorded none.
+    """
+    written: dict[str, int] = {}
+
     def flush(fn, items, what):
         items = _dedupe(items)
         for start in range(0, len(items), BATCH):
@@ -605,6 +614,7 @@ def write(engine: GraphEngine, rows: dict[str, list[dict]]) -> None:
                     if attempt == WRITE_RETRIES - 1:
                         raise
                     time.sleep(0.4 * (attempt + 1))
+        written[what] = len(items)
         print(f"  {what:<14} {len(items):>7,}", flush=True)
 
     # Nodes before edges, always: `merge_edges` matches existing endpoints and
@@ -670,6 +680,7 @@ def write(engine: GraphEngine, rows: dict[str, list[dict]]) -> None:
         rows["concerns"],
         "concerns",
     )
+    return written
 
 
 def _dedupe(items: list[dict]) -> list[dict]:
@@ -770,9 +781,16 @@ def run(args: argparse.Namespace) -> None:
     gen = f"{int(t0)}"
     rows = build(arbitration, titles, people, gen)
     print("writing ...", flush=True)
-    write(engine, rows)
+    written = write(engine, rows)
 
     stats = engine.claim_stats()
+    # What the loader wrote beats what the engine can count in time.
+    stats.update({
+        "claims": written.get("claims", stats.get("claims", 0)),
+        "disagreements": written.get("disagreements", stats.get("disagreements", 0)),
+        "contradicts": written.get("contradicts", 0),
+        "supersedes": written.get("supersedes", 0),
+    })
     elapsed = time.time() - t0
     print(
         f"\nloaded in {elapsed:.1f}s — graph now holds {stats['claims']:,} claims, "

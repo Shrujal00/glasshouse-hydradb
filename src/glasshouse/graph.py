@@ -1163,6 +1163,13 @@ class GraphEngine:
         `count(*)` is the one aggregate the parser accepts, and it is only safe
         on labels this small.
         """
+        # Relationship counts are only attempted because they are cheap on a
+        # small graph. `MATCH (a:Claim)-[:CONTRADICTS]->(b:Claim) RETURN
+        # count(*)` takes 0.1s over a few hundred edges and times out at 30s
+        # over eight hundred, and the caller cannot tell a timeout from a real
+        # zero -- which is how a load that wrote 816 edges reported none. The
+        # server reads these from the loader's own record instead; this stays
+        # as the fallback for when that record is missing.
         out: dict[str, int] = {}
         for key, cypher in (
             ("claims", "MATCH (n:Claim) RETURN count(*)"),

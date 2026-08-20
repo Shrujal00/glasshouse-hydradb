@@ -22,14 +22,18 @@ answered from a document that uses a different one.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
+import sqlite3
+import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Iterator
 
 import ollama
 
-from .config import ADJUDICATION_MODEL, get
+from .config import ADJUDICATION_MODEL, STATE, get
 
 if TYPE_CHECKING:  # the renderer below is duck-typed, so this stays type-only
     from .facets import DocumentFacets
@@ -137,6 +141,89 @@ class Written:
     text: str
     abstained: bool
     cited: list[int]
+
+
+# Temperature 0 is not enough to make a hosted mixture-of-experts model
+# reproducible: which experts route a token depends on the composition of the
+# batch it lands in, and that is decided by whatever other traffic the service
+# is serving at the time. Measured on `gpt-oss:120b-cloud`: three calls with
+# identical input and temperature 0 produced two different answers, and on a
+# real question the pipeline flipped between naming a team and declining to
+# answer at all. Pinning the seed removes it -- three identical outputs -- and
+# a demo that answers differently on the second take is not a demo of a system
+# anybody would trust.
+OPTIONS = {"temperature": 0, "seed": 11}
+
+# ...and the seed is not enough on a long prompt. Measured on
+# `gpt-oss:120b-cloud`: an identical 23,009-character prompt with this exact
+# options dict produced three substantively different answers -- one naming the
+# Scheduler Team, two naming EngPlatform. The same options on a short prompt
+# produce three identical answers, so this is the hosted mixture-of-experts
+# routing varying with whatever else the service is batching, and no client
+# setting reaches it.
+#
+# What follows from that is a cache, not a workaround: the same question over
+# the same evidence returns the answer it returned the first time. Arbitration
+# -- which value is *true* -- is decided in `trust.py` and never varies; it is
+# only the prose around it that does, and prose that rewrites itself on every
+# reload is indistinguishable to a reader from a system changing its mind.
+ANSWERS = STATE / "answers.sqlite3"
+
+
+class _AnswerCache:
+    """Written answers, keyed on the prompt that produced them."""
+
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = path or ANSWERS
+        self._local = threading.local()
+        # Off under test, and off for anyone who wants to see the model answer
+        # fresh. A cache that cannot be turned off hides exactly the
+        # variability it exists to absorb.
+        self.enabled = get("GLASSHOUSE_ANSWER_CACHE", "1") != "0"
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(self.path)
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS answers("
+                "key TEXT PRIMARY KEY, text TEXT NOT NULL)"
+            )
+            conn.commit()
+            self._local.conn = conn
+        return conn
+
+    @staticmethod
+    def key(prompt: str) -> str:
+        return hashlib.sha256(prompt.encode()).hexdigest()
+
+    def get(self, prompt: str) -> str | None:
+        if not self.enabled:
+            return None
+        try:
+            row = self.conn.execute(
+                "SELECT text FROM answers WHERE key = ?", (self.key(prompt),)
+            ).fetchone()
+        except Exception:
+            return None
+        return row[0] if row else None
+
+    def put(self, prompt: str, text: str) -> None:
+        if not self.enabled:
+            return
+        try:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO answers(key, text) VALUES (?, ?)",
+                (self.key(prompt), text),
+            )
+            self.conn.commit()
+        except Exception:
+            pass
+
+
+_answers = _AnswerCache()
 
 
 def _client() -> ollama.Client:
@@ -461,18 +548,24 @@ def write(
     arbitration: "Arbitration | None" = None,
 ) -> Written:
     """Answer in one shot."""
+    prompt = build_prompt(
+        question, docs, people, paths=paths, connected=connected,
+        facets=facets, arbitration=arbitration,
+    )
+    cached = _answers.get(prompt)
+    if cached is not None:
+        return _finish(cached)
     response = _client().chat(
         model=model or ADJUDICATION_MODEL,
         messages=[
             {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": build_prompt(
-                question, docs, people, paths=paths, connected=connected,
-                facets=facets, arbitration=arbitration,
-            )},
+            {"role": "user", "content": prompt},
         ],
-        options={"temperature": 0},
+        options=OPTIONS,
     )
-    return _finish(response["message"]["content"])
+    written = response["message"]["content"]
+    _answers.put(prompt, written)
+    return _finish(written)
 
 
 def write_streaming(
@@ -491,18 +584,28 @@ def write_streaming(
     full: list[str] = []
     pending = ""
     checking_marker = True
-    stream = _client().chat(
-        model=model or ADJUDICATION_MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": build_prompt(
-                question, docs, people, paths=paths, connected=connected,
-                facets=facets, arbitration=arbitration,
-            )},
-        ],
-        options={"temperature": 0},
-        stream=True,
+    prompt = build_prompt(
+        question, docs, people, paths=paths, connected=connected,
+        facets=facets, arbitration=arbitration,
     )
+    cached = _answers.get(prompt)
+    # A cached answer is replayed in pieces rather than handed over whole, so
+    # the interface still shows it being written. The alternative -- a
+    # paragraph appearing instantly on the second ask and slowly on the first
+    # -- looks like two different systems.
+    if cached is not None:
+        stream = ({"message": {"content": cached[i : i + 24]}}
+                  for i in range(0, len(cached), 24))
+    else:
+        stream = _client().chat(
+            model=model or ADJUDICATION_MODEL,
+            messages=[
+                {"role": "system", "content": SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            options=OPTIONS,
+            stream=True,
+        )
     for part in stream:
         piece = part.get("message", {}).get("content", "")
         if not piece:
@@ -528,4 +631,7 @@ def write_streaming(
         yield {"chunk": piece}
     if pending:
         yield {"chunk": pending}
-    yield {"done": _finish("".join(full))}
+    written = "".join(full)
+    if cached is None and written.strip():
+        _answers.put(prompt, written)
+    yield {"done": _finish(written)}

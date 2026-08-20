@@ -77,7 +77,9 @@ def judge(fact: str, written: str, model: str) -> bool:
                         "content": f"REQUIRED FACT:\n{fact}\n\nOUR ANSWER:\n{written}\n\nVerdict:",
                     },
                 ],
-                options={"temperature": 0},
+                # Same reason as the pipeline: a judge that marks the
+                # same fact differently on a re-run is not a measurement.
+                options=answer_module.OPTIONS,
             )
             return "SUPPORTED" in reply["message"]["content"].upper()
         except Exception as exc:

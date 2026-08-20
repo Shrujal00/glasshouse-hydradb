@@ -139,6 +139,13 @@ JSON object of the exact shape given, and nothing else. If you have no claims,
 return {"claims": []}."""
 
 
+# See `answer.OPTIONS`: temperature alone does not pin a hosted MoE model.
+# It matters more here than in synthesis -- an extraction that returns a
+# different set of claims per run is an arbitration that decides differently
+# per run, and the whole point of `trust.py` is that it does not.
+OPTIONS = {"temperature": 0, "seed": 11}
+
+
 def _client() -> ollama.Client:
     """Kept here rather than imported so tests have one place to stub."""
     key = get("OLLAMA_API_KEY")
@@ -354,7 +361,7 @@ def _ask(
         {"role": "user", "content": _prompt(question, documents, passages, scope)},
     ]
     raw = client.chat(
-        model=model or ADJUDICATION_MODEL, messages=messages, options={"temperature": 0}
+        model=model or ADJUDICATION_MODEL, messages=messages, options=OPTIONS
     )["message"]["content"]
     items = _parse(raw)
     if items is None:
@@ -363,7 +370,7 @@ def _ask(
             {"role": "user", "content": REPAIR},
         ]
         raw = client.chat(
-            model=model or ADJUDICATION_MODEL, messages=messages, options={"temperature": 0}
+            model=model or ADJUDICATION_MODEL, messages=messages, options=OPTIONS
         )["message"]["content"]
         items = _parse(raw)
     if items is None:

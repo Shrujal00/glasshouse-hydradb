@@ -23,6 +23,10 @@
     --sans:system-ui,-apple-system,"Segoe UI",Inter,sans-serif;
   }
   *{box-sizing:border-box}
+  /* `hidden` loses to any `display` rule, and several elements here set
+     flex/grid. Without this the legend shows with nothing selected and the
+     empty-state text stays on top of the drawn graph. */
+  [hidden]{display:none !important}
   html,body{height:100%}
   body{
     margin:0; background:var(--ground); color:var(--ink);
@@ -1662,6 +1666,12 @@ function ddraw(){
   requestAnimationFrame(ddraw);
 }
 dresize(); requestAnimationFrame(ddraw);
+
+// The map is the view the page opens on, so it bootstraps itself rather than
+// waiting for a tab click that never comes. Landing straight on it used to
+// leave the list unfetched, and the first filter click then rendered that
+// empty list as "nothing here".
+loadDisagreements();
 
 function dat(ev){
   const r = dcv.getBoundingClientRect();

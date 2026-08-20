@@ -47,13 +47,30 @@ class Hit:
 
     @classmethod
     def from_payload(cls, raw: dict[str, Any]) -> "Hit":
-        meta = raw.get("document_metadata") or raw.get("metadata") or {}
+        """One chunk of the v2 retrieval result.
+
+        The field names moved: results arrive under `chunks`, the text is
+        `chunk_content`, the score is `relevancy_score`, and our own ingest
+        metadata is under `additional_metadata`. The old names are kept as
+        fallbacks so a payload from either shape still parses rather than
+        silently producing a hit with no text.
+        """
+        meta = (
+            raw.get("additional_metadata")
+            or raw.get("document_metadata")
+            or raw.get("metadata")
+            or {}
+        )
         return cls(
             doc_id=str(meta.get("doc_id") or raw.get("id") or ""),
-            score=float(raw.get("score") or raw.get("relevance") or 0.0),
-            source=str(meta.get("source") or ""),
-            title=str(meta.get("title") or ""),
-            text=str(raw.get("content") or raw.get("text") or ""),
+            score=float(
+                raw.get("relevancy_score") or raw.get("score") or raw.get("relevance") or 0.0
+            ),
+            source=str(meta.get("source") or raw.get("source_type") or ""),
+            title=str(meta.get("title") or raw.get("source_title") or ""),
+            text=str(
+                raw.get("chunk_content") or raw.get("content") or raw.get("text") or ""
+            ),
         )
 
 
@@ -127,16 +144,60 @@ class CloudRecall:
 
     # --- read ---------------------------------------------------------------
 
-    def search(self, question: str, limit: int = 20, **filters: Any) -> list[Hit]:
+    def search(
+        self,
+        question: str,
+        limit: int = 20,
+        *,
+        mode: str = "hybrid",
+        graph_context: bool = False,
+        **filters: Any,
+    ) -> list[Hit]:
+        """Documents worth reading, ranked by the managed service.
+
+        `max_results` rather than `limit`: the SDK renamed the parameter and
+        the old call raised `TypeError` on every search, which is why nothing
+        in the query path used this module.
+
+        `query_by="hybrid"` is the reason this half exists at all. The local
+        index is BM25 and nothing else, so a question that paraphrases -- "too
+        many requests errors" for `429` -- has no lexical overlap to match on.
+        The managed service brings its own embeddings, which is dense retrieval
+        this stack could not otherwise have: every Ollama embedding model
+        returns 401 on this account and the GPU is 6 GB.
+        """
         response = self.client.query(
             database=self.database,
             query=question,
-            limit=limit,
+            max_results=limit,
+            query_by=mode,
+            graph_context=graph_context,
             **filters,
         )
         data = response.data if hasattr(response, "data") else response
-        raw = getattr(data, "results", None) or getattr(data, "documents", None) or []
-        return [Hit.from_payload(r if isinstance(r, dict) else r.dict()) for r in raw]
+        raw = (
+            getattr(data, "chunks", None)
+            or getattr(data, "results", None)
+            or getattr(data, "documents", None)
+            or []
+        )
+        out = [
+            Hit.from_payload(
+                r if isinstance(r, dict)
+                else (r.model_dump() if hasattr(r, "model_dump") else r.dict())
+            )
+            for r in raw
+        ]
+        # One hit per document. The service returns chunks, and three chunks of
+        # one page is one document worth reading, not three.
+        seen: set[str] = set()
+        unique: list[Hit] = []
+        for hit in out:
+            if hit.doc_id and hit.doc_id in seen:
+                continue
+            seen.add(hit.doc_id)
+            unique.append(hit)
+        return unique
 
 
 def doc_text(doc: dict[str, Any]) -> str:

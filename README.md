@@ -21,6 +21,70 @@ Glasshouse looks.
 
 ---
 
+## How it's built
+
+**Five pieces, each doing one job.**
+
+| | Piece | Its one job |
+|:-:|---|---|
+| 🔶 | **HydraDB engine** *(self-hosted)* | Holds who everybody is and what disagrees with what. Every question about people or contradictions is answered here. |
+| ☁️ | **HydraDB Cloud** | Finds which documents are worth reading, even when the question and the page share no words. |
+| 🔍 | **SQLite** | Plain keyword search over all 511,962 documents. The fast, boring baseline. |
+| ⚖️ | **`trust.py`** | Decides who's right when two tools disagree — **no model involved**, just arithmetic. |
+| 💬 | **Ollama** | Reads claims out of text, and writes the final answer in English. |
+
+### What happens when you ask something
+
+```
+your question
+     │
+     ├──► keyword search ─────────────┐
+     │                                │
+     ├──► HydraDB: your words ────────┤    all three run
+     │    become every name form      │    at the same time
+     │                                │
+     └──► HydraDB: walk into ─────────┘
+          the folder you named
+                                      │
+                                      ▼
+                          the handful worth reading
+                                      │
+                                      ▼
+                   claims pulled out, then arbitrated
+                                      │
+                    ┌─────────────────┴─────────────────┐
+                    ▼                                   ▼
+              a cited answer                    "I don't know",
+                                                 and why not
+```
+
+Three doors open at once and the **live trace shows you which one found the
+page** — so the graph has to earn its place on every single answer.
+
+### The one that matters
+
+Most of this is ordinary. This part isn't:
+
+> **"What does this company contradict itself about?"**
+
+There is no way to type that into a search box — nobody asked a question, so
+there is no word to search for. But contradiction is stored as a **connection
+between two claims**, so it's just one query.
+
+| | HydraDB | Keyword search |
+|---|---|---|
+| Who is `elliot price`? | 1 person, 7 written forms · **18ms** | 20 documents |
+| Which pages are in this space? | 236, out of 511,962 · **8ms** | 20 documents |
+| **What do we contradict ourselves about?** | **173 disagreements · 13ms** | 20 documents |
+| Who read the version that was wrong? | 7 people · claim → doc → person | 20 documents |
+
+Keyword search answers all four with a pile of documents — which isn't an
+answer to any of them.
+
+Run it yourself: `python scripts/graph_queries.py`
+
+---
+
 ## The idea in one screen
 
 Glasshouse read **511,962 documents** from Slack, Gmail, Jira, Confluence,
@@ -58,6 +122,7 @@ every single time.
 
 ## Contents
 
+- [How it's built](#how-its-built)
 - [How HydraDB is used](#how-hydradb-is-used)
 - [Getting started](#getting-started)
 - [How it works](#how-it-works)
@@ -194,15 +259,13 @@ flowchart LR
     D --> E["48 refusals"]
 ```
 
-Then when you ask a question, **three doors open at once**:
+Two rules the code keeps throughout:
 
-| Door | What it does |
-|---|---|
-| Keyword search | the ordinary one |
-| **The graph, on names** | turns `elliot price` into all six ways he was ever written |
-| **The graph, on places** | walks into the folder you named and returns what's inside |
-
-The live trace shows you which door actually found the page.
+- **A claim that isn't in the text gets thrown away.** That's what stops a
+  plausible-sounding name reaching you as fact.
+- **Merges are refused by default.** 163,262 refused against 42,959 accepted —
+  nearly four times more. That ratio is the difference between an ontology and
+  matching strings.
 
 ---
 
@@ -218,14 +281,6 @@ The live trace shows you which door actually found the page.
 | `trust.py` | decides who's right — or refuses |
 | `ask.py` | the three entrances, and the live trace |
 | `server.py` + `web/` | the three screens |
-
-Two rules the code keeps:
-
-- **A claim that isn't in the text gets thrown away.** That's what stops a
-  plausible-sounding name reaching you as fact.
-- **Merges are refused by default.** 163,262 were refused against 42,959
-  accepted — nearly four times more. That ratio is the difference between an
-  ontology and matching strings.
 
 ---
 

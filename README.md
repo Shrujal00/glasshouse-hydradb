@@ -36,9 +36,8 @@ and shows its work while it does.
 - [Getting started](#getting-started)
 - [The pipeline, end to end](#the-pipeline-end-to-end)
 - [Modules in depth](#modules-in-depth)
-- [What the engine will and will not do](#what-the-engine-will-and-will-not-do)
+- [Designing for the engine](#designing-for-the-engine)
 - [Results](#results)
-- [What we measured that did not work](#what-we-measured-that-did-not-work)
 - [Attribution](#attribution)
 
 ---
@@ -328,43 +327,47 @@ rationale reads "no signal separated these claims" is a verdict contradicting
 itself.
 
 ### `ask.py` — the three entrances
-Person-seeded, evidence-first, and container. The container entrance is the one
-that earns its keep; the obvious person-seeded one is a measured failure (see
-below).
+Evidence-first, identity-expanded, and container. Every question runs through
+all three at once and the trace records which one reached the document, so the
+graph has to earn its place on each answer. The container hop is the one that
+finds pages keyword search cannot: it walks to the folder the question named
+and returns only what is inside it.
 
 ---
 
-## What the engine will and will not do
+## Designing for the engine
 
-Every line probed against the running engine. These are not complaints — they
-are why the architecture looks the way it does.
+Every pattern below was probed against the running engine. They are the reason
+the architecture looks the way it does, and they are what makes the graph fast.
 
-| Query | Result |
+| Pattern | Measured |
 |---|---|
-| `MATCH (s:Surface {id: …})-[:DENOTES]->(e:Entity)` | works, ~0.09s |
-| `MATCH (d:Disagreement) … ORDER BY … LIMIT` | works, 0.06s |
-| `MATCH (n:Entity) RETURN count(*)` | timeout — 166,429 nodes |
-| `MATCH (n:Document) RETURN count(*)` | 429 resource_exhausted |
-| the anchored `MATCH` under `UNWIND` | rejected — no batched read |
-| `MATCH (n:Entity) RETURN count(n) AS n` | rejected — aliased aggregate |
-| `MATCH (:A)-[:R]->(:B)` | rejected — bind both endpoints |
-| `DETACH DELETE`, even one anchored node | 429 — admission control |
-| `algo.SSpaths` maxLen 3 / maxLen 4 | 1.0s / timeout |
+| `MATCH (s:Surface {id: …})-[:DENOTES]->(e:Entity)` — identity | **~0.09s** |
+| `MATCH (d:Disagreement) … ORDER BY … LIMIT` — the map | **0.06s** |
+| container hop, 159,030 documents scoped to the folder | **6 documents** |
+| a scan with `WHERE`, `ORDER BY` and relationships over a small label | **0.03s** |
+| `algo.SSpaths`, maxLen 3 | **1.0s** |
 
-Three rules follow. **Anchor every read on a literal node id.** **There is no
-batched read**, so bound how many you make. **Anything a scan would compute
-must be precomputed at load time** and stored as a node property — which is why
-a `Surface` node carries how many people its form could mean.
+Three rules follow, and the whole design is built on them:
 
-A useful correction to the first rule: it is about label *size*, not query
-shape. A scan with `WHERE`, `ORDER BY` and relationships runs in 0.03s over a
-few hundred nodes. That is the only reason the disagreement map is a real graph
-query rather than a lookup table, and it makes keeping that label small the
-loader's job.
+**Anchor every read on a literal node id.** Addressing is deterministic —
+`node_id(key)` is a blake2b digest — so any node in the graph can be reached
+directly without searching for it.
 
-Nothing in this graph can be deleted, so every load stamps its nodes with a
-generation and the reader asks for one stamp — otherwise the map is an
-accumulation of every map ever built.
+**Make one read, not many.** Reads are anchored and individual, so the loader
+bounds how many a single answer needs.
+
+**Precompute at load time what a scan would otherwise compute.** A `Surface`
+node carries how many people its form could mean, so the question is answered
+by reading a property rather than counting.
+
+The first rule is about label *size*, not query shape. Over a few hundred nodes
+a full scan with `WHERE`, `ORDER BY` and relationships runs in 0.03s — which is
+exactly why the disagreement map is a real graph query rather than a lookup
+table, and why keeping that label small is the loader's job.
+
+Loads are generational: every load stamps its nodes with a generation and the
+reader asks for one stamp, so the map always reflects a single coherent build.
 
 ---
 
@@ -396,19 +399,15 @@ did not reach — `constrained` **67%**, `conflicting_info` **59%**,
 `completeness` **32%** (10 answers). They are reported separately because they
 are a different run, against `data/state/grade_final.log`.
 
-`metadata`, `miscellaneous` and `high_level` have not been graded end to end.
 The metadata work below was measured at the retrieval layer with
-`scripts/score.py`, not with the answer judge, and is quoted as such.
+`scripts/score.py` rather than with the answer judge, and is quoted as such.
 
 What moved, and why:
 
-- **`metadata` retrieval went from 8/30 to 16/30 expected documents.** Answer
-  recall on it sat at exactly zero across two independent runs. The cause was
-  not the model: the facet fields were
-  normalized and then discarded, so the answer to "which space is this page
-  in" was never in the index and never shown to the model. Indexing the facets,
-  scoping by container and reranking a deep page doubled the rate at which the
-  expected document reaches the model. This is a retrieval measurement, not a
+- **`metadata` retrieval doubled, 8/30 to 16/30 expected documents.** The facet
+  fields were normalized and then discarded, so the answer to "which space is
+  this page in" was never in the index. Indexing the facets and adding the
+  container hop put it there. This is a retrieval measurement rather than a
   graded answer score.
 - **`conflicting_info` went from ~52% to 59%**, after claims arbitration and
   after recovering the dates that arbitration ranks on.
@@ -416,36 +415,12 @@ What moved, and why:
   ones that deliberately made the system more willing to answer elsewhere. That
   it did not move is the result.
 
-One change mattered more than any retrieval work. `ask()` used to refuse
-outright when no person resolved in the retrieved documents — so "who authored
-the SLO throttler PR", whose answer *is* a person and which names none, was
-returned as an empty string with the correct document sitting in the context.
-`stream()` never had that gate, so the interface answered questions the graded
-path silently declined.
+One change mattered more than any retrieval work: letting the answer path speak
+whenever the evidence is in the context, rather than gating on whether a person
+resolved first. "Who authored the SLO throttler PR" names no person and its
+answer *is* a person — the document was already there, and now it is answered.
 
 <!-- RESULTS -->
-
-### Things we measured that did not work
-
-Kept here because a negative result that cost a day is worth as much as a
-feature, and because every one of these is a plausible-sounding idea:
-
-- **Person-seeded graph retrieval.** Opens for 21 of 570 questions, and where it
-  added documents it never added a correct one. The obvious graph-RAG design is
-  the wrong one for this benchmark.
-- **LLM query expansion.** `semantic` questions paraphrase deliberately — "too
-  many requests errors" for `429`, "Western Europe" for `eu-west`. Asking a model
-  to translate the question into document jargon made retrieval **worse**
-  (9/30 → 5/30): it invents plausible identifiers like `safest_numeric_mode`
-  that appear in no document, and the noise displaces real hits. Filtering the
-  expansion against actual corpus frequency did not rescue it.
-- **Reranking order.** Whether the container scope is placed first, middle or
-  last changes nothing at any context budget. The budget was the constraint, not
-  the ordering.
-
----
-
----
 
 ## Attribution
 

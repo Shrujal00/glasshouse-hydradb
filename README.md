@@ -184,26 +184,25 @@ Each step restarts safely and prints what it did.
 
 ## How it works
 
-```mermaid
-flowchart TD
-    A["Nine tool exports"] --> B["511,962 documents<br/>one shape"]
-    B --> C["Who is who<br/>401,163 names → 166,429 people"]
-    B --> D["Search index<br/>+ HydraDB Cloud"]
-    C --> E[("HydraDB graph")]
-    D --> E
-    E --> F["Claims pulled out<br/>3,356 with proof"]
-    F --> G["Arbitration<br/>no model, just arithmetic"]
-    G --> H["173 disagreements"]
-    G --> I["48 refusals"]
+Everything narrows. Each step throws away what the next one doesn't need.
 
-    style E fill:#FF5C39,stroke:#FF5C39,color:#0A0908
-    style I fill:#7FA3C0,stroke:#7FA3C0,color:#0A0908
-    style H fill:#12100E,stroke:#FF5C39,color:#F7F3EF
+```mermaid
+flowchart LR
+    A["511,962 documents"] --> B["166,429 people"]
+    B --> C["3,356 claims"]
+    C --> D["173 disagreements"]
+    D --> E["48 refusals"]
 ```
 
-When you ask a question, three entrances open at once — plain keyword search,
-the graph expanding your words into every name form, and the graph walking into
-the folder you named. The trace shows you which one actually found the page.
+Then when you ask a question, **three doors open at once**:
+
+| Door | What it does |
+|---|---|
+| Keyword search | the ordinary one |
+| **The graph, on names** | turns `elliot price` into all six ways he was ever written |
+| **The graph, on places** | walks into the folder you named and returns what's inside |
+
+The live trace shows you which door actually found the page.
 
 ---
 

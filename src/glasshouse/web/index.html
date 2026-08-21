@@ -1183,7 +1183,14 @@ function render(ev){
         $('ans').innerHTML = esc(ev.text).replace(/\[(\d+)\]/g, '<cite>$1</cite>');
         if (ev.abstained){
           $('ans-block').classList.add('no');
-          $('ans-head').textContent = 'not in the corpus';
+          // The marker is binary, the answers are not. "Which PR, and who
+          // wrote it" gets the PR answered and the author declined; "which
+          // blockchain do we anchor to" gets nothing at all. Both raise the
+          // same flag, and no reliable signal in the text separates them --
+          // both run long and both cite the documents they did read. So the
+          // heading claims only what is true of both: it could not answer all
+          // of what was asked. The body underneath says which part.
+          $('ans-head').textContent = 'couldn\u2019t fully answer';
         }
         $('ans-src').innerHTML = (ev.sources || []).map(sc => {
           // `cite` ends with "(source, date)" -- pull the tool out of it so

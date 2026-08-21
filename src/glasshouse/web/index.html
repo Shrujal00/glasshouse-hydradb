@@ -186,6 +186,9 @@
   .gdoc .hop{font-family:var(--mono); font-size:10px; color:var(--evidence); flex:none}
   .gdoc .t{color:var(--slate); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
   .nograph{font-size:12px; color:var(--dim)}
+  .mark{display:inline-block; flex:none; vertical-align:-2px; line-height:0}
+  .mark svg{width:100%; height:100%; display:block}
+  .mark.blank{border-radius:2px; background:var(--edge)}
   /* The one number that makes the graph's contribution obvious: how much of
      the corpus one anchored hop removed. Given its own scale because a ratio
      buried in a trace line is a ratio nobody reads. */
@@ -309,10 +312,14 @@
   .dis-values{display:grid; grid-template-columns:1fr auto 1fr; gap:10px; align-items:center}
   .dis-val{font-size:12.5px; min-width:0}
   .dis-val .v{color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
-  .dis-val .m{font-family:var(--mono); font-size:10px; color:var(--dim); margin-top:2px}
+  .dis-val .m{font-family:var(--mono); font-size:10px; color:var(--dim);
+    margin-bottom:5px; display:flex; align-items:center; gap:5px}
   .dis-val.lost .v{color:var(--slate)}
   .dis-vs{font-family:var(--mono); font-size:10px; color:var(--doubt); flex:none}
-  .dis-foot{font-family:var(--mono); font-size:10.5px; color:var(--dim)}
+  .dis-foot{font-family:var(--mono); font-size:10.5px; color:var(--dim);
+    display:flex; align-items:center; gap:5px}
+  .dis-foot span{margin-left:4px}
+  .dis-foot .itself{color:var(--doubt)}
   .dis-foot b{color:var(--slate); font-weight:400}
 
   /* detail */
@@ -321,17 +328,50 @@
   .det-head .k{font-family:var(--mono); font-size:10px; color:var(--trace);
     letter-spacing:.08em; text-transform:uppercase}
   .det-head h3{margin:5px 0 0; font-size:14px; font-weight:600}
-  .det-why{margin:8px 0 0; font-size:12px; color:var(--slate); font-style:italic}
+  /* The verdict, at a size somebody reads from across a room. Everything
+     under it is the working; this is the answer. */
+  .headline{
+    font-size:23px; line-height:1.22; letter-spacing:-.02em; color:var(--ink);
+    margin:12px 0 7px; font-weight:500;
+  }
+  .headline.open{color:var(--doubt)}
+  .headline-sub{
+    display:flex; align-items:center; gap:7px;
+    font-family:var(--mono); font-size:11px; color:var(--slate);
+  }
+  .badges{display:flex; gap:6px; flex-wrap:wrap; margin:14px 0 4px}
+  .badge{
+    font-family:var(--mono); font-size:9.5px; letter-spacing:.04em;
+    padding:3px 9px; border-radius:11px; border:1px solid transparent;
+  }
+  .badge.on{color:var(--evidence); border-color:rgba(255,176,58,.28);
+    background:rgba(255,176,58,.07)}
+  .badge.off{color:var(--doubt); border-color:rgba(233,145,124,.28);
+    background:rgba(233,145,124,.07)}
+
+  /* An evidence card, not a table row: the source mark and the value are the
+     two things a reader wants, so they go first and biggest. */
+  .cl-top{display:flex; align-items:center; gap:7px; margin-bottom:6px}
+  .cl-src{font-family:var(--mono); font-size:10.5px; color:var(--slate)}
+  .cl .st{margin-left:auto}
+
+  .det-why{margin:12px 0 0; font-size:12px; color:var(--slate); font-style:italic}
   .det-why.open{color:var(--doubt); font-style:normal}
   .side{padding:12px 20px; border-bottom:1px solid var(--edge)}
   .side .lbl{font-family:var(--mono); font-size:9.5px; letter-spacing:.08em;
     text-transform:uppercase; color:var(--dim); margin-bottom:7px}
-  .cl{display:grid; gap:3px; padding:7px 0; border-top:1px solid rgba(42,33,36,.6)}
-  .cl:first-of-type{border-top:none}
+  .cl{
+    display:grid; gap:3px; padding:12px 13px; margin-bottom:8px;
+    border:1px solid var(--edge); border-radius:3px; background:var(--sunk, rgba(255,255,255,.012));
+    border-left:2px solid var(--edge);
+  }
+  .cl.won{border-left-color:var(--evidence)}
+  .cl.lost{border-left-color:var(--doubt); opacity:.82}
   .cl .v{font-size:12.5px; color:var(--ink)}
   .cl.lost .v{color:var(--slate)}
   .cl .m{font-family:var(--mono); font-size:10px; color:var(--dim);
-    display:flex; gap:8px; flex-wrap:wrap; align-items:baseline}
+    display:flex; gap:10px; flex-wrap:wrap; align-items:baseline; margin-top:4px}
+  .cl .v{font-size:14px; line-height:1.35}
   .cl .st{text-transform:uppercase; letter-spacing:.05em}
   .cl.won .st{color:var(--evidence)}
   .cl.lost .st{color:var(--doubt)}
@@ -1274,6 +1314,31 @@ function loadDisagreements(){
 // those in their head; they walk around with a question. Rendering the
 // question instead of the field name is the whole difference between a screen
 // an engineer can read and one anybody can.
+
+// ── source marks ─────────────────────────────────────────────────────────
+// Nine tools, drawn rather than named. A row that says `slack` in grey text
+// and a row that carries Slack's mark are the same information and are not
+// the same to read: the mark is recognised before it is read, which is the
+// whole job on a screen somebody scans rather than studies.
+const MARK = {
+  slack: '<svg viewBox="0 0 24 24" fill="none"><path d="M5.1 15.2a2.1 2.1 0 1 1-2.1-2.1h2.1v2.1Z" fill="#E01E5A"/><path d="M6.2 15.2a2.1 2.1 0 0 1 4.2 0v5.2a2.1 2.1 0 0 1-4.2 0v-5.2Z" fill="#E01E5A"/><path d="M8.3 5.1a2.1 2.1 0 1 1 2.1-2.1v2.1H8.3Z" fill="#36C5F0"/><path d="M8.3 6.2a2.1 2.1 0 0 1 0 4.2H3.1a2.1 2.1 0 0 1 0-4.2h5.2Z" fill="#36C5F0"/><path d="M18.4 8.3a2.1 2.1 0 1 1 2.1 2.1h-2.1V8.3Z" fill="#2EB67D"/><path d="M17.3 8.3a2.1 2.1 0 0 1-4.2 0V3.1a2.1 2.1 0 0 1 4.2 0v5.2Z" fill="#2EB67D"/><path d="M15.2 18.4a2.1 2.1 0 1 1-2.1 2.1v-2.1h2.1Z" fill="#ECB22E"/><path d="M15.2 17.3a2.1 2.1 0 0 1 0-4.2h5.2a2.1 2.1 0 0 1 0 4.2h-5.2Z" fill="#ECB22E"/></svg>',
+  gmail: '<svg viewBox="0 0 24 24"><path d="M2 6.5 12 13l10-6.5V18a1.5 1.5 0 0 1-1.5 1.5H3.5A1.5 1.5 0 0 1 2 18V6.5Z" fill="#EA4335"/><path d="M2 6a1.5 1.5 0 0 1 2.4-1.2L12 10.4l7.6-5.6A1.5 1.5 0 0 1 22 6v.5L12 13 2 6.5V6Z" fill="#C5221F"/></svg>',
+  github: '<svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.9 1.53 2.36 1.09 2.94.83.09-.65.35-1.09.63-1.34-2.22-.25-4.56-1.11-4.56-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.5 9.5 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2Z" fill="#E6E1DC"/></svg>',
+  jira: '<svg viewBox="0 0 24 24"><path d="M11.6 2 3 10.6a1 1 0 0 0 0 1.4l5 5 3.6-3.6L11.6 2Z" fill="#2684FF"/><path d="M12.4 22 21 13.4a1 1 0 0 0 0-1.4l-5-5-3.6 3.6L12.4 22Z" fill="#2684FF"/><path d="M12 7.4 8 11.4l4 4 4-4-4-4Z" fill="#0052CC"/></svg>',
+  linear: '<svg viewBox="0 0 24 24"><path d="M2.2 14.3 9.7 21.8a10 10 0 0 1-7.5-7.5ZM2 11.4 12.6 22a10 10 0 0 0 2.3-.5L2.5 9.1a10 10 0 0 0-.5 2.3ZM3.5 7 17 20.5a10 10 0 0 0 1.7-1.2L4.7 5.3A10 10 0 0 0 3.5 7ZM6.3 3.9 20.1 17.7a10 10 0 1 0-13.8-13.8Z" fill="#5E6AD2"/></svg>',
+  confluence: '<svg viewBox="0 0 24 24"><path d="M2.4 17.2c-.3.5-.1 1.1.4 1.3l4.4 2.7c.5.3 1.1.1 1.4-.4 1.8-3 3.5-2.6 6.5-1.2l4.3 2c.5.2 1.1 0 1.3-.5l2.1-4.7c.2-.5 0-1-.5-1.3-1.8-.9-5.5-2.6-8.8-2.6-5.1 0-8.5 2.4-11.1 4.7Z" fill="#2684FF"/><path d="M21.6 6.8c.3-.5.1-1.1-.4-1.3L16.8 2.8c-.5-.3-1.1-.1-1.4.4-1.8 3-3.5 2.6-6.5 1.2L4.6 2.4c-.5-.2-1.1 0-1.3.5L1.2 7.6c-.2.5 0 1 .5 1.3 1.8.9 5.5 2.6 8.8 2.6 5.1 0 8.5-2.4 11.1-4.7Z" fill="#0052CC"/></svg>',
+  google_drive: '<svg viewBox="0 0 24 24"><path d="M8.1 2.5 1.3 14.3l3.4 5.9L11.5 8.4 8.1 2.5Z" fill="#0066DA"/><path d="M15.9 2.5H8.1l3.4 5.9h7.8L15.9 2.5Z" fill="#00AC47"/><path d="M4.7 20.2h14.6l3.4-5.9H8.1l-3.4 5.9Z" fill="#FFBA00"/><path d="M19.3 8.4h-7.8l6.9 11.8 3.4-5.9-2.5-5.9Z" fill="#EA4335"/></svg>',
+  hubspot: '<svg viewBox="0 0 24 24"><path d="M18.3 8.4V6.1a1.9 1.9 0 1 0-1.8 0v2.3a5.4 5.4 0 0 0-2.5 1.1L7.5 5a2.1 2.1 0 1 0-1 1.6l6.4 4.4a5.3 5.3 0 0 0 .1 6l-2 2a1.7 1.7 0 0 0-.5-.1 1.8 1.8 0 1 0 1.8 1.8c0-.2 0-.4-.1-.5l1.9-2a5.4 5.4 0 1 0 4.2-9.8Zm-1 8.2a2.8 2.8 0 1 1 0-5.6 2.8 2.8 0 0 1 0 5.6Z" fill="#FF7A59"/></svg>',
+  fireflies: '<svg viewBox="0 0 24 24"><path d="M12 2c2.5 3.4 6 5.4 6 9.6A6 6 0 0 1 6 11.6C6 7.4 9.5 5.4 12 2Z" fill="#8A6EF3"/><circle cx="12" cy="12.5" r="2.4" fill="#F5EFEA"/><path d="M9 20h6M10 22h4" stroke="#8A6EF3" stroke-width="1.6" stroke-linecap="round"/></svg>',
+};
+
+function mark(source, size){
+  const svg = MARK[source];
+  const px = size || 14;
+  if (!svg) return '<span class="mark blank" style="width:' + px + 'px;height:' + px + 'px"></span>';
+  return '<span class="mark" style="width:' + px + 'px;height:' + px + 'px">' + svg + '</span>';
+}
+
 function asQuestion(predicate, subject){
   const who = esc(subject);
   switch (predicate){
@@ -1310,16 +1375,25 @@ function renderDisagreements(){
         verdict +
       '</div>' +
       '<div class="dis-values">' +
-        '<div class="dis-val"><div class="m">' + esc(r.winner.source) + ' says</div>' +
+        '<div class="dis-val"><div class="m">' + mark(r.winner.source) +
+          esc(r.winner.source) + '</div>' +
           '<div class="v">' + esc(r.winner.value) + '</div></div>' +
-        '<span class="dis-vs">but</span>' +
+        '<span class="dis-vs">vs</span>' +
         '<div class="dis-val' + (r.decided ? ' lost' : '') + '">' +
-          '<div class="m">' + esc(r.runner.source) + ' says</div>' +
+          '<div class="m">' + mark(r.runner.source) + esc(r.runner.source) + '</div>' +
           '<div class="v">' + esc(r.runner.value) + '</div></div>' +
       '</div>' +
-      '<div class="dis-foot">' + esc(r.sources.length) + ' tools disagree' +
-        (r.sides > 2 ? ', ' + r.sides + ' different answers' : '') +
-        ' · ' + esc(r.sources.join(', ')) + '</div>' +
+      '<div class="dis-foot">' +
+        r.sources.map(x => mark(x, 13)).join('') +
+        // One tool stating two things is a real finding, not a rendering
+        // fault -- and left unlabelled beside "4 tools" it reads as one.
+        // Naming it is both more honest and the more striking result.
+        (r.winner.source === r.runner.source
+          ? '<span class="itself">' + esc(r.winner.source) +
+            ' contradicts itself</span>'
+          : '<span>' + r.sources.length + ' tools' +
+            (r.sides > 2 ? ' · ' + r.sides + ' answers' : '') + '</span>') +
+      '</div>' +
     '</div>';
   }).join('');
 }
@@ -1354,24 +1428,44 @@ function openDisagreement(key){
         : '';
       const lead = g.claims[0];
       return '<div class="' + cls + '">' +
+        '<div class="cl-top">' + mark(lead.source, 15) +
+          '<span class="cl-src">' + esc(lead.source) + '</span>' +
+          '<span class="st">' + esc(head) + '</span></div>' +
         '<div class="v">' + esc(lead.value) + '</div>' +
-        '<div class="m"><span class="st">' + esc(head) + '</span>' +
-          '<span>' + esc(lead.source) + (lead.date ? ', ' + esc(lead.date) : '') + '</span>' +
-          '<span>trust ' + lead.trust.toFixed(2) + '</span></div>' +
-        '<div class="m">' + esc(lead.title || lead.doc_id) + '</div>' + also +
+        '<div class="m"><span>' + esc(lead.title || lead.doc_id) + '</span>' +
+          (lead.date ? '<span>' + esc(lead.date) + '</span>' : '') +
+          '<span>trust ' + lead.trust.toFixed(2) + '</span></div>' + also +
         '<div class="acts">' +
           '<button data-history="' + esc(lead.claim_id) + '">history</button>' +
           '<button data-blast="' + esc(lead.claim_id) + '">who read this</button>' +
         '</div></div>';
     }).join('');
+    // The verdict stated the way a person would state it, at a size they can
+    // read across a room. Everything else on this panel is the working.
+    const lead = d.claims[0] || {};
+    const verdict = d.decided
+      ? '<div class="headline">' + esc(lead.value) + '</div>' +
+        '<div class="headline-sub">' + mark(lead.source, 15) +
+        'we believe ' + esc(lead.source) + '</div>'
+      : '<div class="headline open">We can\u2019t tell</div>' +
+        '<div class="headline-sub">' + d.sides +
+        ' sources, none more credible than the others</div>';
+    const badges =
+      '<div class="badges">' +
+        '<span class="badge on">\u2713 Identity resolved</span>' +
+        '<span class="badge on">\u2713 Evidence cited</span>' +
+        (d.decided
+          ? '<span class="badge on">\u2713 Arbitrated</span>'
+          : '<span class="badge off">\u2014 Refused</span>') +
+      '</div>';
     $('map-detail').innerHTML =
-      '<div class="det-head"><div class="k">' + esc(d.scope) + ' · ' +
-        esc(d.predicate) + '</div><h3>' + esc(d.subject) + '</h3>' + why +
+      '<div class="det-head"><div class="k">' + esc(d.scope) + ' \u00b7 ' +
+        asQuestion(d.predicate, d.subject) + '</div>' +
+        verdict + badges + why +
         (d.entity ? '<button class="jump" data-person="' + esc(d.entity.name) +
-          '">who is ' + esc(d.entity.name) + '? →</button>' : '') + '</div>' +
-      '<div class="side"><div class="lbl">' + sides.length +
-        ' positions, ' + d.claims.length + ' claims across ' +
-        esc(d.sources.join(', ')) + '</div>' +
+          '">who is ' + esc(d.entity.name) + '? \u2192</button>' : '') + '</div>' +
+      '<div class="side"><div class="lbl">key evidence \u2014 ' + sides.length +
+        ' positions across ' + d.sources.length + ' tools</div>' +
         claims + '</div>' +
       '<div class="side" id="det-extra" hidden></div>';
     drawDisagreement(d);

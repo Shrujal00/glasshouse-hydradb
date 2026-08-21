@@ -496,14 +496,22 @@ def arbitrate(claims: Sequence[Claim]) -> Arbitration:
             winner_status, loser_status = "accepted", "superseded" if recency_moved else "disputed"
         elif winner.trust < TRUST_FLOOR:
             rationale = (
-                f"both values are weakly evidenced (trust {winner.trust:.2f} and "
-                f"{runner_up.trust:.2f}, floor {TRUST_FLOOR:.2f})"
+                f"both values are weakly evidenced: trust {winner.trust:.3f} "
+                f"and {runner_up.trust:.3f}, and {TRUST_FLOOR:.2f} is the "
+                f"least worth asserting"
             )
             winner_status = loser_status = "disputed"
         else:
+            # Three decimals, and the threshold named. Rounded to two, a
+            # refusal at 0.960 against 0.902 prints as "0.96 against 0.90" --
+            # a gap of 0.06 against a margin of 0.06, which reads to anybody
+            # checking as a verdict the system should have reached and did
+            # not. The number that decided it has to be the number shown.
             rationale = (
-                f"trust is too close to choose ({winner.trust:.2f} against "
-                f"{runner_up.trust:.2f})"
+                f"trust is too close to choose: {winner.trust:.3f} against "
+                f"{runner_up.trust:.3f} is a gap of "
+                f"{winner.trust - runner_up.trust:.3f}, and "
+                f"{MARGIN:.2f} is the least that would settle it"
             )
             winner_status = loser_status = "disputed"
 

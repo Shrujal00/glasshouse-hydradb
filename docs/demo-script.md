@@ -36,7 +36,11 @@ Open `http://127.0.0.1:8080`. It lands on **disagreements**. Leave it there.
 
 ## 0:25 — 0:55 · What it is
 
-**On screen:** scroll the list slowly. Click **ENG-4824 · Who owns this?**
+**On screen:** scroll the list slowly — the scroll itself is the point, there
+are 173 of these. **ENG-4824 · Who owns this?** is about 30 rows down. Click it.
+
+*(If you would rather not scroll on camera: row 7, `PR-28644`, is answered with
+short values — linear says "Landed PR + hotfix", github says "Approved".)*
 
 > "Glasshouse read half a million documents across all nine tools and found
 > every place the company wrote the same thing down two different ways.
@@ -44,7 +48,7 @@ Open `http://127.0.0.1:8080`. It lands on **disagreements**. Leave it there.
 > Nobody asked it a question. This list already existed when I opened the page.
 >
 > Here — who owns ENG-4824? Confluence says Benji Okafor and Sofia Ivanova.
-> Slack says Liam. Drive says Sofia and Lena. Three tools, three answers.
+> Slack says Liam and Maria. Three tools, three answers.
 >
 > It picked Confluence, and it says why: a reviewed page outranks a chat
 > message."
@@ -68,8 +72,9 @@ Open `http://127.0.0.1:8080`. It lands on **disagreements**. Leave it there.
 
 **Go back to the list. Click the `refuses to decide` filter.**
 
-> "And these are the ones it won't settle. Two sources, equally credible, and
-> the honest answer is that this company hasn't actually decided yet.
+> "And these are the ones it won't settle — forty-eight of a hundred and
+> seventy-three. Two sources, equally credible, and the honest answer is that
+> this company hasn't actually decided yet.
 >
 > Most systems pick. This one is allowed to say it doesn't know — and it tells
 > you why it can't."
@@ -135,8 +140,9 @@ Open `http://127.0.0.1:8080`. It lands on **disagreements**. Leave it there.
 | Written forms → people | 401,163 → 166,429 |
 | Merges accepted / refused | 42,959 / **163,262** |
 | Ontology build time | 22.6s |
-| Claims in the graph | 875 |
-| CONTRADICTS / SUPERSEDES edges | 232 / 29 |
+| Disagreements found | 173, of which 48 it refuses to settle |
+| Claims in the graph | 3,356 |
+| CONTRADICTS / SUPERSEDES edges | 816 / 75 |
 | Identity resolution | one hop, ~0.09s |
 | Container hop | 159,030 documents → 6 |
 | Disagreement map | 0.06s |
@@ -152,9 +158,13 @@ Open `http://127.0.0.1:8080`. It lands on **disagreements**. Leave it there.
   511,962 documents is the unanchored scan the engine rejects; moving it made
   the product slower and worse. The graph earns its place on identity and
   arbitration.
-- **"How much of the corpus did you extract claims from?"** — 284 documents of
-  511,962, and it found 59 disagreements. Reading all of it is about three
-  hours of compute, not a research problem.
+- **"How much of the corpus did you extract claims from?"** — 1,406 documents
+  of 511,962, about a quarter of one percent, and it found 173 disagreements.
+  Reading all of it is a few hours of compute, not a research problem.
+- **"Why do some rows say one tool contradicts itself?"** — Because it does:
+  Linear says "Done" in one document and "merged" in another. 41 of the 173 are
+  a single tool disagreeing with itself across two documents, and those are
+  labelled rather than hidden.
 
 ## Do not claim
 

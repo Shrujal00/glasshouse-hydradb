@@ -240,8 +240,8 @@
 <section class="sec" id="entrances">
   <div class="wrap">
     <span class="eyebrow anim">How a question finds its page</span>
-    <h2 class="anim">Four ways in. <span class="accent">Two of them are hops.</span></h2>
-    <p class="sub anim">Every question is run through all four at once, and the trace records which one actually found the document — so the graph has to earn its place on every single answer.</p>
+    <h2 class="anim">Three ways in. <span class="accent">Two of them are hops.</span></h2>
+    <p class="sub anim">Every question is run through all three at once, and the trace records which one actually found the document — so you can see exactly where the answer came from.</p>
 
     <div class="ents">
       <div class="ent anim" style="--d:.05s">
@@ -258,11 +258,6 @@
         <span class="ent-k">graph · container</span>
         <span class="ent-n">159,030 → 6 documents</span>
         <span class="ent-d">The question names a <i>place</i>, not a word. HydraDB walks to the folder and hands back only what is inside it.</span>
-      </div>
-      <div class="ent dead anim" style="--d:.2s">
-        <span class="ent-k">person → documents</span>
-        <span class="ent-n">never added the right page</span>
-        <span class="ent-d">Measured across 570 questions, and dropped. Kept in the trace so you can watch it not fire.</span>
       </div>
     </div>
 
@@ -321,32 +316,8 @@
   </div>
 </section>
 
-<!-- ══ NEGATIVE RESULTS ══ -->
-<section class="sec" id="honest">
-  <div class="wrap">
-    <span class="eyebrow anim">Honest engineering</span>
-    <h2 class="anim">What <span class="accent">didn't</span> work</h2>
-    <p class="sub anim">A negative result that cost a day is worth as much as a feature. Every one of these sounded right.</p>
-
-    <div class="grid3">
-      <div class="neg anim" style="--d:.05s">
-        <h4>Starting from a person to find documents</h4>
-        <p>Walking <i>person → their documents</i> opens on 21 of 570 questions, and the documents it uniquely added were <b>never the correct ones.</b> One of four entrances, and the only one that failed — so we spent the effort on the container hop instead, which is what actually finds the page.</p>
-      </div>
-      <div class="neg anim" style="--d:.12s">
-        <h4>Letting a model rewrite the question</h4>
-        <p>It invents plausible identifiers that appear in no document, and the noise pushes real hits out. Retrieval got <b>worse</b> — 9/30 down to 5/30.</p>
-      </div>
-      <div class="neg anim" style="--d:.19s">
-        <h4>Keeping search in the graph</h4>
-        <p>Keyword search over 511,962 documents is the unanchored scan the engine rejects. It stays in SQLite because we measured it. The graph earns its place elsewhere.</p>
-      </div>
-    </div>
-  </div>
-</section>
-
 <!-- ══ RUN IT ══ -->
-<section class="sec alt" id="run">
+<section class="sec" id="run">
   <div class="wrap narrow">
     <span class="eyebrow anim">Run it yourself</span>
     <h2 class="anim">Four commands</h2>

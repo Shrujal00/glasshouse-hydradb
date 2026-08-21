@@ -517,19 +517,6 @@ h4 { font-size: 1.08rem; letter-spacing: -0.018em; }
 }
 .stat span { font-size: 0.92rem; color: var(--mute); }
 
-/* ── negative results ───────────────────────────────────── */
-
-.neg {
-  padding: 26px 24px;
-  border: 1px solid var(--line);
-  border-left: 2px solid var(--halt-line);
-  border-radius: 4px var(--r) var(--r) 4px;
-  background: var(--ink-raise);
-}
-.neg h4 { margin-bottom: 10px; color: var(--paper); }
-.neg p { font-size: 0.95rem; color: var(--mute); }
-.neg b { color: var(--halt); }
-
 /* ── terminal ───────────────────────────────────────────── */
 
 .term {
@@ -619,21 +606,18 @@ h4 { font-size: 1.08rem; letter-spacing: -0.018em; }
   background: var(--ink-raise);
 }
 .ent.graph { border-left-color: var(--flame); }
-.ent.dead  { border-left-color: var(--halt-line); opacity: .72; }
 
 .ent-k {
   font-family: var(--mono); font-size: 0.7rem; font-weight: 500;
   letter-spacing: 0.13em; text-transform: uppercase; color: var(--faint);
 }
 .ent.graph .ent-k { color: var(--flame); }
-.ent.dead  .ent-k { color: var(--halt); }
 
 .ent-n {
   font-family: var(--mono); font-size: 1.02rem; font-weight: 700;
   letter-spacing: -0.02em; color: var(--paper);
   font-variant-numeric: tabular-nums;
 }
-.ent.dead .ent-n { color: var(--halt); text-decoration: line-through; text-decoration-thickness: 1px; }
 
 .ent-d { font-size: 0.93rem; color: var(--mute); }
 .ent-d code { color: var(--paper); background: rgba(255,238,228,.06); padding: 1px 5px; border-radius: 4px; }

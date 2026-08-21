@@ -22,6 +22,7 @@
       <a href="#funnel">The funnel</a>
       <a href="#refuse">Refusal</a>
       <a href="#hydra">HydraDB</a>
+      <a href="#entrances">Retrieval</a>
       <a href="#results">Results</a>
     </nav>
     <a href="https://github.com/Shrujal00/glasshouse-hydradb" target="_blank" rel="noopener" class="btn btn-ghost">GitHub</a>
@@ -34,6 +35,7 @@
     <a href="#funnel">The funnel</a>
     <a href="#refuse">Refusal</a>
     <a href="#hydra">HydraDB</a>
+      <a href="#entrances">Retrieval</a>
     <a href="#results">Results</a>
     <a href="https://github.com/Shrujal00/glasshouse-hydradb" target="_blank" rel="noopener">GitHub</a>
   </nav>
@@ -234,8 +236,54 @@
   </div>
 </section>
 
+<!-- ══ ENTRANCES ══ -->
+<section class="sec" id="entrances">
+  <div class="wrap">
+    <span class="eyebrow anim">How a question finds its page</span>
+    <h2 class="anim">Four ways in. <span class="accent">Two of them are hops.</span></h2>
+    <p class="sub anim">Every question is run through all four at once, and the trace records which one actually found the document — so the graph has to earn its place on every single answer.</p>
+
+    <div class="ents">
+      <div class="ent anim" style="--d:.05s">
+        <span class="ent-k">keyword</span>
+        <span class="ent-n">BM25 over 511,962 documents</span>
+        <span class="ent-d">The baseline. Fails when the question and the page share no words.</span>
+      </div>
+      <div class="ent graph anim" style="--d:.1s">
+        <span class="ent-k">graph · identity</span>
+        <span class="ent-n">one hop · 0.09s</span>
+        <span class="ent-d"><code>elliot price</code> becomes six written forms, including two typo'd domains, before search ever runs.</span>
+      </div>
+      <div class="ent graph anim" style="--d:.15s">
+        <span class="ent-k">graph · container</span>
+        <span class="ent-n">159,030 → 6 documents</span>
+        <span class="ent-d">The question names a <i>place</i>, not a word. HydraDB walks to the folder and hands back only what is inside it.</span>
+      </div>
+      <div class="ent dead anim" style="--d:.2s">
+        <span class="ent-k">person → documents</span>
+        <span class="ent-n">never added the right page</span>
+        <span class="ent-d">Measured across 570 questions, and dropped. Kept in the trace so you can watch it not fire.</span>
+      </div>
+    </div>
+
+    <div class="trace anim" style="--d:.25s">
+      <div class="trace-hd"><span>live trace</span><span class="trace-q">…which published page by Elliot Price contains copy-paste templates…</span></div>
+<pre><code><span class="c">expanded</span>   elliot price → 6 written forms
+<span class="c">containers</span> entrance: <b>"hydradb"</b>  confluence:folder:customer-success-and-support
+<span class="c">          </span> 236 documents in the folder, <b>16 of 20</b> shown reached only this way
+<span class="c">graph_doc</span>  hops: 1   Entity-[:MENTIONED_IN]-&gt;Document
+<span class="c">graded</span>     <b>5 / 6</b> required facts supported</code></pre>
+    </div>
+
+    <p class="statement small anim" style="--d:.3s">
+      The question names no person and its words appear nowhere in the page body.
+      <span class="hl">Keyword search cannot find it. The hop can.</span>
+    </p>
+  </div>
+</section>
+
 <!-- ══ RESULTS ══ -->
-<section class="sec" id="results">
+<section class="sec alt" id="results">
   <div class="wrap">
     <span class="eyebrow anim">Measured, not estimated</span>
     <h2 class="anim">Graded against a key<br>the system <span class="accent">cannot see</span></h2>
@@ -274,7 +322,7 @@
 </section>
 
 <!-- ══ NEGATIVE RESULTS ══ -->
-<section class="sec alt" id="honest">
+<section class="sec" id="honest">
   <div class="wrap">
     <span class="eyebrow anim">Honest engineering</span>
     <h2 class="anim">What <span class="accent">didn't</span> work</h2>
@@ -282,8 +330,8 @@
 
     <div class="grid3">
       <div class="neg anim" style="--d:.05s">
-        <h4>Graph-native retrieval</h4>
-        <p>Seeding search from resolved people opens on 21 of 570 questions and <b>never once added a correct document.</b> The obvious graph-RAG design is the wrong one here, so we built two other entrances instead.</p>
+        <h4>Starting from a person to find documents</h4>
+        <p>Walking <i>person → their documents</i> opens on 21 of 570 questions, and the documents it uniquely added were <b>never the correct ones.</b> One of four entrances, and the only one that failed — so we spent the effort on the container hop instead, which is what actually finds the page.</p>
       </div>
       <div class="neg anim" style="--d:.12s">
         <h4>Letting a model rewrite the question</h4>
@@ -298,7 +346,7 @@
 </section>
 
 <!-- ══ RUN IT ══ -->
-<section class="sec" id="run">
+<section class="sec alt" id="run">
   <div class="wrap narrow">
     <span class="eyebrow anim">Run it yourself</span>
     <h2 class="anim">Four commands</h2>

@@ -79,6 +79,11 @@
     position:absolute; inset:0; display:grid; place-content:center; gap:14px;
     text-align:center; color:var(--dim); pointer-events:none; padding:40px;
   }
+  /* The nine tools, drawn. "across all nine tools" is a claim; the row of
+     marks underneath it is the evidence, and it reads in about a second. */
+  .tools{display:flex; gap:14px; justify-content:center; flex-wrap:wrap;
+    margin:2px 0 6px; opacity:.85}
+  .tools .mark{width:22px; height:22px}
   .hint p{margin:0; font-size:13px; max-width:46ch; line-height:1.7}
   .hint .big{font-family:var(--mono); font-size:13px; color:var(--slate)}
   .hint code{color:var(--trace); cursor:pointer; pointer-events:auto}
@@ -168,8 +173,8 @@
   .doc{display:flex; gap:9px; padding:6px 0; font-size:12.5px; align-items:baseline}
   .src{
     font-family:var(--mono); font-size:10px; color:var(--evidence);
-    border:1px solid rgba(255,176,58,.30); padding:1px 5px; border-radius:2px;
-    flex:none; text-transform:uppercase; letter-spacing:.04em;
+    padding:1px 4px; border-radius:2px; flex:none; letter-spacing:.03em;
+    display:inline-flex; align-items:center; gap:5px;
   }
   .doc .t{color:var(--slate); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
 
@@ -216,6 +221,20 @@
   .clash .why{font-size:11.5px; color:var(--slate); margin-top:6px; font-style:italic}
   .clash.undecided{border-left-color:var(--slate)}
   .clash.undecided .claim .val{text-decoration:none; color:var(--ink)}
+
+  /* What an independent judge scored this answer, for the benchmark's own
+     questions. Read from what `scripts/grade.py` recorded after the fact --
+     the pipeline still cannot see the key it was marked against. */
+  .graded{
+    display:inline-flex; align-items:center; gap:8px; margin-top:12px;
+    font-family:var(--mono); font-size:10.5px; padding:5px 11px;
+    border-radius:12px; border:1px solid rgba(255,176,58,.3);
+    color:var(--evidence); background:rgba(255,176,58,.06);
+  }
+  .graded b{font-weight:600; font-size:12px}
+  .graded .t{color:var(--dim); letter-spacing:.04em}
+  .graded.part{border-color:rgba(233,145,124,.3); color:var(--doubt);
+    background:rgba(233,145,124,.06)}
 
   .abstain{border-left:2px solid var(--doubt); padding-left:12px}
   .abstain .gate{font-family:var(--mono); font-size:10px; color:var(--doubt);
@@ -533,11 +552,12 @@
     <canvas id="cv"></canvas>
     <div id="tip" hidden></div>
     <div class="hint" id="hint">
-      <p class="big">the graph draws itself as the question is answered</p>
-      <p>documents land as amber squares, people resolve in orange, and every
-         alias that collapses onto a person keeps the evidence that put it
-         there. hover anything to see why it is on screen.</p>
-      <p>try <code data-q="who owns the audit-log shipper sidecar?">who owns the audit-log shipper sidecar?</code></p>
+      <p class="big">ask across all nine tools at once</p>
+      <div class="tools" id="tool-row"></div>
+      <p>the graph draws itself as the question is answered — documents land as
+         amber squares, people resolve in orange, and every alias that
+         collapses onto a person keeps the evidence that put it there.</p>
+      <p>try <code data-q="In the internal customer success and support knowledge space, which published page by Elliot Price contains copy-paste templates for customer-safe escalation and incident updates?">a benchmark question that names a place, not a person</code></p>
     </div>
   </div>
 
@@ -992,7 +1012,29 @@ function reset(){
 
 // ── ask ──────────────────────────────────────────────────────────────────
 let source = null;
+// What an independent judge scored this answer, when the question is one of
+// the benchmark's. Fetched after the answer lands, never before -- it must not
+// be able to influence anything, and it does not: the endpoint reads counts
+// recorded by `scripts/grade.py`, never the answer key.
+function showGrade(question){
+  if (!question) return;
+  fetch('/api/graded?q=' + encodeURIComponent(question))
+    .then(r => r.json()).then(g => {
+      if (!g.graded) return;
+      const all = g.supported === g.facts;
+      $('ans-src').insertAdjacentHTML('beforebegin',
+        '<div class="graded' + (all ? '' : ' part') + '">' +
+        '<b>' + g.supported + '/' + g.facts + '</b>' +
+        '<span>required facts supported</span>' +
+        '<span class="t">graded independently \u00b7 ' + esc(g.type) + '</span>' +
+        '</div>');
+    }).catch(()=>{});
+}
+
+let asked = '';
+
 function run(question){
+  asked = question;
   if (!question.trim()) return;
   if (source) source.close();
   reset();
@@ -1112,8 +1154,15 @@ function render(ev){
           $('ans-block').classList.add('no');
           $('ans-head').textContent = 'not in the corpus';
         }
-        $('ans-src').innerHTML = (ev.sources || []).map(sc =>
-          `<div><b>${sc.n}</b><span>${esc(sc.cite)}</span></div>`).join('');
+        $('ans-src').innerHTML = (ev.sources || []).map(sc => {
+          // `cite` ends with "(source, date)" -- pull the tool out of it so
+          // the citation carries its mark rather than only its name.
+          const m = /\(([a-z_]+)[,)]/.exec(sc.cite || '');
+          return `<div><b>${sc.n}</b>` +
+            (m ? mark(m[1], 13) : '') +
+            `<span>${esc(sc.cite)}</span></div>`;
+        }).join('');
+        showGrade(asked);
         break;
       }
       case 'graph_scope':
@@ -1288,6 +1337,10 @@ function showView(which){
   // which it is not.
   $('c-dis-wrap').hidden = which !== 'map';
   if (which === 'map' && !disRows.length) loadDisagreements();
+
+// Nine marks under the ask view's opening line.
+$('tool-row').innerHTML = ['slack','gmail','jira','linear','github',
+  'confluence','google_drive','hubspot','fireflies'].map(x => mark(x, 22)).join('');
   if (which === 'ont') loadOntology();
   // The canvas could not measure itself while it was hidden, so it takes its
   // size at the moment it becomes visible instead.
@@ -1820,6 +1873,10 @@ dresize(); requestAnimationFrame(ddraw);
 // leave the list unfetched, and the first filter click then rendered that
 // empty list as "nothing here".
 loadDisagreements();
+
+// Nine marks under the ask view's opening line.
+$('tool-row').innerHTML = ['slack','gmail','jira','linear','github',
+  'confluence','google_drive','hubspot','fireflies'].map(x => mark(x, 22)).join('');
 
 function dat(ev){
   const r = dcv.getBoundingClientRect();

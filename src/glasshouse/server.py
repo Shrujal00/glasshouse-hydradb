@@ -12,14 +12,17 @@ engine in Docker. No account, no key, no network.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
 
+from functools import lru_cache
+
 from .ask import Asker
 from .graph import node_id
-from .config import STATE
+from .config import ROOT, STATE
 
 WEB = Path(__file__).parent / "web"
 
@@ -301,6 +304,71 @@ def claim_stats() -> dict:
         except Exception:
             pass
     return out
+
+
+# --- how a benchmark question was graded ------------------------------------
+#
+# This does NOT read the answer key, and it must never be made to. The rule the
+# whole measurement rests on is that nothing under `src/glasshouse` can see
+# `$GOLD_ANSWERS_PATH` -- a pipeline that can read what it is marked against is
+# a pipeline whose score means nothing.
+#
+# Two files are read here and neither is the key. `questions_blind.jsonl` is
+# the published question list: ids and question text, no answers. And
+# `answer_grade.json` is what `scripts/grade.py` wrote *after* the fact --
+# `{question_id, type, facts, supported, seconds}`, counts and nothing else.
+# Neither can tell the system what the right answer is; together they can tell
+# a reader that the answer they are looking at was independently marked, and
+# what it scored.
+
+
+@lru_cache(maxsize=1)
+def _benchmark() -> dict[str, dict]:
+    """Question text → the grade `scripts/grade.py` recorded for it."""
+    blind = ROOT / "data" / "bench" / "questions_blind.jsonl"
+    ids: dict[str, str] = {}
+    try:
+        for line in blind.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            ids[_normal(row.get("question", ""))] = row.get("question_id", "")
+    except Exception:
+        return {}
+    graded: dict[str, dict] = {}
+    try:
+        report = json.loads((STATE / "answer_grade.json").read_text())
+        by_id = {row["question_id"]: row for row in report.get("detail", [])}
+    except Exception:
+        return {}
+    for text, qid in ids.items():
+        row = by_id.get(qid)
+        if row:
+            graded[text] = {
+                "question_id": qid,
+                "type": row.get("type", ""),
+                "facts": row.get("facts", 0),
+                "supported": row.get("supported", 0),
+                "seconds": row.get("seconds"),
+            }
+    return graded
+
+
+def _normal(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").casefold()).strip()
+
+
+@app.get("/api/graded")
+def graded(q: str) -> dict:
+    """What an independent judge scored this answer, if it is a benchmark question.
+
+    Marked one required fact at a time by `scripts/grade.py`, against a rubric
+    this process cannot read.
+    """
+    row = _benchmark().get(_normal(q))
+    if not row:
+        return {"graded": False}
+    return {"graded": True, **row}
 
 
 # --- the ontology -----------------------------------------------------------

@@ -140,9 +140,7 @@ replays instantly and still streams visibly. A cold ask can take 30 seconds.
 
 **1 · The container entrance — the one to lead with**
 
-> In the internal customer success and support knowledge space, which published
-> page by Elliot Price contains copy-paste templates for customer-safe
-> escalation and incident communication?
+> In the internal customer success and support knowledge space, which published page by Elliot Price contains copy-paste templates for customer-safe escalation and incident updates?
 
 Graded **5/6 facts**. Watch the trace: *hydradb reached
 `confluence:folder:customer-success-and-support` from 1 container*, and that
@@ -151,24 +149,19 @@ appear nowhere in the page body — it names a *place*, and places are nodes.
 
 **2 · Fast and exact**
 
-> In the engineering ops cleanup ticket about reconciling office equipment and
-> deactivating old access cards, what is the due date?
+> In the engineering ops cleanup ticket about reconciling office equipment and deactivating old access cards, what is the due date?
 
 Graded **6/6 facts** in 6.3s. Good if you need a quick, clean hit.
 
 **3 · A deliberate paraphrase**
 
-> In our GPU inference runtime, what change was introduced to cut the
-> worst-case temporary device-memory spike when short and long requests are
-> interleaved?
+> In our GPU inference runtime, what change was introduced to cut the worst-case temporary device-memory spike when short and long requests are interleaved, especially for attention-heavy ops that used to grab per-op temp buffers?
 
 Graded **4/4 facts**. The question and the document share almost no wording.
 
 **4 · Reasoning, not lookup**
 
-> For the Jupiter Therapeutics rollout, if the target go-live is 2028-07-22 and
-> the canary is planned as 7 days with a 10/90 traffic split, what date should
-> the canary start?
+> For the Jupiter Therapeutics rollout, if the target go-live is 2028-07-22 and the canary is planned as 7 days with a 10/90 traffic split, what date should the canary period start?
 
 Graded **4/4 facts**. The answer is not written anywhere; it is worked out.
 
@@ -178,6 +171,9 @@ Graded **4/4 facts**. The answer is not written anywhere; it is worked out.
 > blockchain network do we anchor to and what smart contract address is used?
 
 It should decline. That refusal is the result.
+
+**The wording has to be exact** — the graded badge matches on the question
+text, so a paraphrase gets no score shown. Copy these verbatim.
 
 *Verified working against the current graph on 21 Aug.* Note that the
 `audit-log shipper sidecar` question in the README is **ours, not the

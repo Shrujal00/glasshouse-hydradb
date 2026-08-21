@@ -1008,6 +1008,7 @@ function reset(){
     $(id).hidden = true;
   delete $('ab-docs').dataset.titled; delete $('ab').dataset.connected;
   $('hint').style.display = 'none';
+  document.querySelectorAll('.graded').forEach(el => el.remove());
 }
 
 // ── ask ──────────────────────────────────────────────────────────────────
@@ -1016,11 +1017,19 @@ let source = null;
 // the benchmark's. Fetched after the answer lands, never before -- it must not
 // be able to influence anything, and it does not: the endpoint reads counts
 // recorded by `scripts/grade.py`, never the answer key.
+let asked = '';
+
 function showGrade(question){
   if (!question) return;
+  // Every answer inserted its badge and left the last one in place, so a
+  // second question showed two scores stacked -- one of them belonging to the
+  // question before it. Clear first, and drop a reply that arrives after the
+  // user has already moved on to a different question.
+  document.querySelectorAll('.graded').forEach(el => el.remove());
   fetch('/api/graded?q=' + encodeURIComponent(question))
     .then(r => r.json()).then(g => {
-      if (!g.graded) return;
+      if (!g.graded || question !== asked) return;
+      document.querySelectorAll('.graded').forEach(el => el.remove());
       const all = g.supported === g.facts;
       $('ans-src').insertAdjacentHTML('beforebegin',
         '<div class="graded' + (all ? '' : ' part') + '">' +
@@ -1030,8 +1039,6 @@ function showGrade(question){
         '</div>');
     }).catch(()=>{});
 }
-
-let asked = '';
 
 function run(question){
   asked = question;

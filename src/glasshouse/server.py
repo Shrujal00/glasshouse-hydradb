@@ -327,14 +327,26 @@ def _benchmark() -> dict[str, dict]:
     """Question text → the grade `scripts/grade.py` recorded for it."""
     blind = ROOT / "data" / "bench" / "questions_blind.jsonl"
     ids: dict[str, str] = {}
+    # 100 of the published ids carry two entirely different questions. The
+    # grade report stores one row per id, so for those the score on file
+    # belongs to one of the two and there is no way here to tell which: the
+    # blind file has no type to disambiguate on, and the key that would settle
+    # it is deliberately unreachable from this process. A badge on the wrong
+    # question is worse than no badge, so an id claimed by more than one
+    # question is dropped rather than guessed at.
+    claimed: dict[str, set[str]] = {}
     try:
         for line in blind.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
             row = json.loads(line)
-            ids[_normal(row.get("question", ""))] = row.get("question_id", "")
+            text, qid = _normal(row.get("question", "")), row.get("question_id", "")
+            ids[text] = qid
+            claimed.setdefault(qid, set()).add(text)
     except Exception:
         return {}
+    ambiguous = {qid for qid, texts in claimed.items() if len(texts) > 1}
+    ids = {text: qid for text, qid in ids.items() if qid not in ambiguous}
     graded: dict[str, dict] = {}
     try:
         report = json.loads((STATE / "answer_grade.json").read_text())

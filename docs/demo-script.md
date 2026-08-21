@@ -167,10 +167,10 @@ Graded **4/4 facts**. The answer is not written anywhere; it is worked out.
 
 **5 · Knowing the answer is not there** — this category scores **100%**
 
-> For the admin activity chronicle's daily Merkle-root anchoring, which public
-> blockchain network do we anchor to and what smart contract address is used?
+> For the admin activity chronicle's daily Merkle-root anchoring, which public blockchain network do we anchor to and what smart contract address is used, and how should an auditor verify the anchor end-to-end?
 
-It should decline. That refusal is the result.
+It should decline. That refusal is the result — and it is now graded:
+the badge reads **1/1 · info_not_found**. This whole category scores 20 of 20.
 
 **The wording has to be exact** — the graded badge matches on the question
 text, so a paraphrase gets no score shown. Copy these verbatim.
@@ -195,7 +195,9 @@ call it a benchmark result on camera.
 | Container hop | 159,030 documents → 6 |
 | Disagreement map | 0.06s |
 | Tests | 183 passing |
-| Fact recall | ~44% weighted; 100% on knowing the answer is absent |
+| Fact recall | 199 of 424 required facts — 47%, over 100 graded answers |
+| Knowing the answer is absent | **100%**, 20 of 20 |
+| Answers correct on every fact | 43 of 100 |
 
 ## Say these if asked
 

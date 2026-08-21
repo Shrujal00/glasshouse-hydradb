@@ -375,33 +375,42 @@ benchmark's own `answer_facts` rubric with an LLM judge, one fact at a time.
 The answer key lives **outside this repository** and only the two scoring
 scripts may read it; nothing under `src/glasshouse` can see it.
 
-Measured 2026-08-20, 20 questions per category. The baseline is the same
-harness run on 2026-08-18, before any of the work below.
+Every number below is 20 questions of that type, graded fact by fact. The
+current run is 2026-08-21 and its raw report is committed at
+`data/state/answer_grade.json`, so it can be checked without re-running
+anything.
 
-| Category | Questions | Fact recall |
+| Category | Answers | Fact recall |
 |---|---:|---:|
 | `info_not_found` — knowing the answer is absent | 20 | **100%** |
-| `intra_document_reasoning` | 40 | **81%** |
-| `constrained` | 30 | **67%** |
-| `conflicting_info` — the arbitration case | 20 | **60%** |
-| `basic` | 175 | 40% |
-| `project_related` | 40 | 38% |
-| `metadata` — authorship, ownership, location | 100 | 32% |
-| `completeness` | 20 | 32% |
-| `semantic` — deliberate paraphrase | 125 | 29% |
-| **weighted overall** | **570 / 600** | **≈44%**  (from 35.5%) |
+| `intra_document_reasoning` | 20 | **82%** |
+| `basic` | 20 | 41% |
+| `project_related` — up to 20 required facts each | 20 | 38% |
+| `semantic` — deliberate paraphrase | 20 | 35% |
+| **overall** | **100** | **199 / 424 — 46.9%** |
 
-`miscellaneous` and `high_level` (30 questions) are not yet measured.
+43 of those 100 answers supported every required fact. Median latency 10.1s.
+
+An earlier run of the same harness on 2026-08-19 measured three types this run
+did not reach — `constrained` **67%**, `conflicting_info` **59%**,
+`completeness` **32%** (10 answers). They are reported separately because they
+are a different run, against `data/state/grade_final.log`.
+
+`metadata`, `miscellaneous` and `high_level` have not been graded end to end.
+The metadata work below was measured at the retrieval layer with
+`scripts/score.py`, not with the answer judge, and is quoted as such.
 
 What moved, and why:
 
-- **`metadata` went from 0% to 32%.** It sat at exactly zero across two
-  independent runs. The cause was not the model: the facet fields were
+- **`metadata` retrieval went from 8/30 to 16/30 expected documents.** Answer
+  recall on it sat at exactly zero across two independent runs. The cause was
+  not the model: the facet fields were
   normalized and then discarded, so the answer to "which space is this page
   in" was never in the index and never shown to the model. Indexing the facets,
-  scoping by container and reranking a deep page took the expected document
-  reaching the model from 8/30 to 16/30.
-- **`conflicting_info` went from ~52% to 60%**, after claims arbitration and
+  scoping by container and reranking a deep page doubled the rate at which the
+  expected document reaches the model. This is a retrieval measurement, not a
+  graded answer score.
+- **`conflicting_info` went from ~52% to 59%**, after claims arbitration and
   after recovering the dates that arbitration ranks on.
 - **`info_not_found` held at 100%** through every prompt change — including the
   ones that deliberately made the system more willing to answer elsewhere. That

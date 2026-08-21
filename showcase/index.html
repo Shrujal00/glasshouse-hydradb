@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Glasshouse</title>
+<meta name="description" content="Nine enterprise tools disagree about who owns what. Glasshouse reads 511,962 documents, resolves who everybody is, finds every place the company contradicts itself — and refuses to answer when the evidence will not carry it.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="hdr">
+  <div class="hdr-in">
+    <a href="#top" class="mark">
+      <img src="assets/logo.webp" alt="" width="34" height="34">
+      <span class="mark-txt">Glasshouse</span>
+    </a>
+    <nav class="nav">
+      <a href="#funnel">The funnel</a>
+      <a href="#refuse">Refusal</a>
+      <a href="#hydra">HydraDB</a>
+      <a href="#results">Results</a>
+    </nav>
+    <a href="https://github.com/Shrujal00/glasshouse-hydradb" target="_blank" rel="noopener" class="btn btn-ghost">GitHub</a>
+    <button class="burger" aria-label="Menu" aria-expanded="false"><span></span><span></span></button>
+  </div>
+</header>
+
+<div class="sheet" hidden>
+  <nav>
+    <a href="#funnel">The funnel</a>
+    <a href="#refuse">Refusal</a>
+    <a href="#hydra">HydraDB</a>
+    <a href="#results">Results</a>
+    <a href="https://github.com/Shrujal00/glasshouse-hydradb" target="_blank" rel="noopener">GitHub</a>
+  </nav>
+</div>
+
+<!-- ══ HERO ══ -->
+<section class="hero" id="top">
+  <div class="wrap">
+    <div class="tag anim">Hack Hydra 2026 · Track 01</div>
+    <h1 class="anim" style="--d:.06s">
+      Nine tools.<br>
+      One&nbsp;company.<br>
+      <em>Three&nbsp;different&nbsp;answers.</em>
+    </h1>
+    <p class="lede anim" style="--d:.14s">
+      Glasshouse read half a million documents across Slack, Gmail, Jira, Confluence,
+      GitHub, Drive, HubSpot, Linear and Fireflies — and found every place the company
+      wrote the same thing down two different ways. Nobody had to ask.
+    </p>
+    <div class="row anim" style="--d:.2s">
+      <a href="https://github.com/Shrujal00/glasshouse-hydradb" target="_blank" rel="noopener" class="btn btn-solid">Read the code</a>
+      <a href="#funnel" class="btn btn-ghost">See how ↓</a>
+    </div>
+  </div>
+
+  <div class="tools anim" style="--d:.26s">
+    <span>slack</span><span>gmail</span><span>jira</span><span>confluence</span><span>github</span><span>drive</span><span>hubspot</span><span>linear</span><span>fireflies</span>
+  </div>
+</section>
+
+<!-- ══ PROBLEM ══ -->
+<section class="band">
+  <div class="wrap narrow">
+    <p class="statement anim">
+      A company keeps the same fact in nine places. Over time those facts drift apart,
+      and nobody notices — <span class="hl">because nobody is looking.</span>
+      You find out when somebody acts on the wrong one.
+    </p>
+  </div>
+</section>
+
+<!-- ══ FUNNEL — the spine ══ -->
+<section class="sec" id="funnel">
+  <div class="wrap">
+    <span class="eyebrow anim">The funnel</span>
+    <h2 class="anim">Half a million documents,<br>narrowed to <span class="accent">what's actually wrong</span></h2>
+    <p class="sub anim">Each step throws work away on purpose. The last number is the one that matters.</p>
+
+    <ol class="funnel">
+      <li class="anim" style="--d:.05s">
+        <span class="fn-n" data-target="511962">0</span>
+        <span class="fn-l">documents read</span>
+        <span class="fn-d">Nine tool formats parsed into one shape.</span>
+      </li>
+      <li class="anim" style="--d:.1s">
+        <span class="fn-n" data-target="166429">0</span>
+        <span class="fn-l">real people</span>
+        <span class="fn-d">401,163 ways of writing a name collapse into one person each.</span>
+      </li>
+      <li class="anim" style="--d:.15s">
+        <span class="fn-n" data-target="3356">0</span>
+        <span class="fn-l">claims extracted</span>
+        <span class="fn-d">Who owns it, what state it's in, when it's due — each with a source.</span>
+      </li>
+      <li class="anim" style="--d:.2s">
+        <span class="fn-n" data-target="173">0</span>
+        <span class="fn-l">disagreements</span>
+        <span class="fn-d">Two tools, two answers, same question. Found before anyone asked.</span>
+      </li>
+      <li class="anim last" style="--d:.25s">
+        <span class="fn-n" data-target="48">0</span>
+        <span class="fn-l">it refuses to settle</span>
+        <span class="fn-d">Equally credible sources. The honest answer is that nobody has decided.</span>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- ══ THREE THINGS ══ -->
+<section class="sec alt">
+  <div class="wrap">
+    <span class="eyebrow anim">What it does</span>
+    <h2 class="anim">Three jobs, <span class="accent">one graph</span></h2>
+
+    <div class="grid3">
+      <article class="card anim" style="--d:.05s">
+        <span class="card-k">01</span>
+        <h3>Know who everybody is</h3>
+        <p>
+          <code>@jae</code>, <code>J. Okafor</code>, <code>jokafor@corp.com</code> and a
+          typo'd domain are one person. Resolving a name is a single hop through the
+          graph.
+        </p>
+        <div class="card-f"><b>163,262</b> merges refused by hard rules</div>
+      </article>
+
+      <article class="card anim" style="--d:.12s">
+        <span class="card-k">02</span>
+        <h3>Notice the contradictions</h3>
+        <p>
+          Confluence says Benji owns it. Slack says Liam. Those two claims are joined by
+          a real edge, so "what do we contradict ourselves about" is one query — not a
+          search.
+        </p>
+        <div class="card-f"><b>816</b> contradiction edges · <b>75</b> supersessions</div>
+      </article>
+
+      <article class="card anim" style="--d:.19s">
+        <span class="card-k">03</span>
+        <h3>Pick a side, and say why</h3>
+        <p>
+          A reviewed page outranks a chat message. Newer outranks older. Two sources
+          outrank one. It is arithmetic — <b>no model is called</b>, so the same claims
+          settle the same way every time.
+        </p>
+        <div class="card-f">10 shuffled runs · byte-identical verdicts</div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ══ REFUSAL — the thesis ══ -->
+<section class="sec refuse" id="refuse">
+  <div class="wrap narrow">
+    <span class="eyebrow halt anim">The part that matters</span>
+    <h2 class="anim">Most systems always pick.<br><span class="halt-t">This one is allowed to say no.</span></h2>
+
+    <div class="verdict anim" style="--d:.1s">
+      <div class="verdict-hd">
+        <span class="chip">refuses to decide</span>
+        <span class="verdict-id">ENG-4824 · owner</span>
+      </div>
+      <div class="verdict-body">
+        <div class="side">
+          <span class="side-src">confluence</span>
+          <span class="side-val">Benji Okafor, Sofia Ivanova</span>
+          <span class="side-t">trust 0.958</span>
+        </div>
+        <div class="vs">vs</div>
+        <div class="side">
+          <span class="side-src">slack</span>
+          <span class="side-val">Liam, Maria</span>
+          <span class="side-t">trust 0.900</span>
+        </div>
+      </div>
+      <p class="why">
+        trust is too close to choose: 0.958 against 0.900 is a gap of 0.058,
+        and 0.06 is the least that would settle it
+      </p>
+    </div>
+
+    <p class="statement small anim" style="--d:.16s">
+      Forty-eight of a hundred and seventy-three end this way. Two sources, equally
+      credible — and the truthful answer is that <span class="hl">this company has not
+      actually decided yet.</span> It tells you why it can't, in a sentence you can check.
+    </p>
+  </div>
+</section>
+
+<!-- ══ HYDRADB ══ -->
+<section class="sec alt" id="hydra">
+  <div class="wrap">
+    <span class="eyebrow anim">Built on HydraDB</span>
+    <h2 class="anim">Used twice, for <span class="accent">two different jobs</span></h2>
+    <p class="sub anim">Turn the engine off and every one of these questions returns zero. It is not storing a result computed somewhere else — it is where the reasoning happens.</p>
+
+    <div class="grid2">
+      <article class="hcard anim" style="--d:.05s">
+        <span class="hcard-k">Open-source engine · self-hosted</span>
+        <h3>The ontology and the contradictions</h3>
+        <p>Who everybody is, and what disagrees with what — stored as nodes and edges, queried with OpenCypher.</p>
+        <div class="pair">
+          <div><b data-target="209388">0</b><span>surface nodes</span></div>
+          <div><b data-target="978512">0</b><span>graph edges</span></div>
+        </div>
+        <ul class="qs">
+          <li><span>Who is <code>@jae</code>?</span><b>0.09s</b></li>
+          <li><span>What do we contradict ourselves about?</span><b>0.06s</b></li>
+          <li><span>Which pages live in this space?</span><b>159,030 → 6</b></li>
+          <li><span>Build the whole ontology</span><b>22.6s</b></li>
+        </ul>
+      </article>
+
+      <article class="hcard anim" style="--d:.12s">
+        <span class="hcard-k">Managed cloud</span>
+        <h3>Finding the document at all</h3>
+        <p>Hybrid dense and sparse recall over the full corpus — embeddings this stack could not otherwise have, on a 6&nbsp;GB local GPU.</p>
+        <div class="pair">
+          <div><b data-target="31320">0</b><span>documents indexed</span></div>
+          <div><b>hybrid</b><span>dense + sparse</span></div>
+        </div>
+        <p class="note">
+          A question that says <i>"too many requests errors"</i> still finds the page that
+          only ever says <code>429</code>. Keyword search cannot do that.
+        </p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ══ RESULTS ══ -->
+<section class="sec" id="results">
+  <div class="wrap">
+    <span class="eyebrow anim">Measured, not estimated</span>
+    <h2 class="anim">Graded against a key<br>the system <span class="accent">cannot see</span></h2>
+    <p class="sub anim">
+      The answer key lives outside the repository, and only the scoring script may read
+      it. Every answer is checked one required fact at a time by a separate judge, after
+      the answer is already final. <b>Twenty questions per category, one run, 100 answers</b>
+      — the raw report is <code>data/state/answer_grade.json</code> in the repo.
+    </p>
+
+    <div class="tbl-wrap anim" style="--d:.08s">
+      <table class="tbl">
+        <thead><tr><th>Question type</th><th>What it asks for</th><th>Fact recall</th></tr></thead>
+        <tbody>
+          <tr class="win"><td>Info not found</td><td>Knowing the answer isn't there</td><td><b>100%</b></td></tr>
+          <tr><td>Intra-document reasoning</td><td>Working it out from one page</td><td><b>82%</b></td></tr>
+          <tr><td>Basic</td><td>Straight lookup</td><td>41%</td></tr>
+          <tr><td>Project related</td><td>Long answers, up to 20 required facts each</td><td>38%</td></tr>
+          <tr><td>Semantic</td><td>Deliberate paraphrase</td><td>35%</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="sub anim" style="--d:.1s">
+      An earlier run of the same harness measured three more types — constrained <b>67%</b>,
+      conflicting info <b>59%</b>, completeness <b>32%</b>. They are kept separate here
+      because they came from a different run.
+    </p>
+
+    <div class="grid3 tight">
+      <div class="stat anim" style="--d:.05s"><b>47%</b><span>of every required fact, supported — 199 of 424</span></div>
+      <div class="stat anim" style="--d:.1s"><b>43</b><span>of 100 answers correct on every single fact</span></div>
+      <div class="stat anim" style="--d:.15s"><b data-target="183">0</b><span>tests, none of which need the network</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ NEGATIVE RESULTS ══ -->
+<section class="sec alt" id="honest">
+  <div class="wrap">
+    <span class="eyebrow anim">Honest engineering</span>
+    <h2 class="anim">What <span class="accent">didn't</span> work</h2>
+    <p class="sub anim">A negative result that cost a day is worth as much as a feature. Every one of these sounded right.</p>
+
+    <div class="grid3">
+      <div class="neg anim" style="--d:.05s">
+        <h4>Graph-native retrieval</h4>
+        <p>Seeding search from resolved people opens on 21 of 570 questions and <b>never once added a correct document.</b> The obvious graph-RAG design is the wrong one here, so we built two other entrances instead.</p>
+      </div>
+      <div class="neg anim" style="--d:.12s">
+        <h4>Letting a model rewrite the question</h4>
+        <p>It invents plausible identifiers that appear in no document, and the noise pushes real hits out. Retrieval got <b>worse</b> — 9/30 down to 5/30.</p>
+      </div>
+      <div class="neg anim" style="--d:.19s">
+        <h4>Keeping search in the graph</h4>
+        <p>Keyword search over 511,962 documents is the unanchored scan the engine rejects. It stays in SQLite because we measured it. The graph earns its place elsewhere.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ RUN IT ══ -->
+<section class="sec" id="run">
+  <div class="wrap narrow">
+    <span class="eyebrow anim">Run it yourself</span>
+    <h2 class="anim">Four commands</h2>
+    <div class="term anim" style="--d:.08s">
+      <div class="term-hd"><i></i><i></i><i></i><span>terminal</span></div>
+<pre><code><span class="c"># clone, install, start the engine</span>
+git clone https://github.com/Shrujal00/glasshouse-hydradb.git
+cd glasshouse-hydradb
+python -m venv .venv &amp;&amp; .venv/bin/pip install -e ".[dev]"
+docker compose up -d
+
+<span class="c"># 183 tests, no network needed</span>
+.venv/bin/python -m pytest
+
+<span class="c"># open http://127.0.0.1:8080</span>
+.venv/bin/python -m uvicorn glasshouse.server:app \
+    --host 127.0.0.1 --port 8080 --app-dir src</code></pre>
+    </div>
+  </div>
+</section>
+
+<footer class="ftr">
+  <div class="wrap">
+    <div class="ftr-in">
+      <a href="#top" class="mark">
+        <img src="assets/logo.webp" alt="" width="30" height="30">
+        <span class="mark-txt">Glasshouse</span>
+      </a>
+      <p>
+        Built by <a href="https://github.com/Shrujal00" target="_blank" rel="noopener">Shrujal Ganatra</a>
+        for <a href="https://hackhydra.hydradb.com" target="_blank" rel="noopener">Hack Hydra 2026</a>
+      </p>
+      <p class="fine">Apache-2.0 · built in public, 12–21 August 2026</p>
+    </div>
+  </div>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>

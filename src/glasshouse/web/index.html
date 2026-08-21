@@ -920,6 +920,7 @@ function draw(){
 
   const arr = [...nodes.values()].sort((p,q) =>
     (p.kind === 'entity') - (q.kind === 'entity'));   // people drawn on top
+  const labels = [];
 
   for (const n of arr){
     const age = reduce ? 1 : Math.min(1, (now - n.born) / 520);
@@ -962,23 +963,46 @@ function draw(){
     ctx.globalAlpha = (n.kind === 'alias' ? 0.65 : 0.92) * ease * dim;
     ctx.fill(); ctx.globalAlpha = 1;
 
-    ctx.textAlign = 'center';
     // Hovering names the neighbourhood: a document only worth a square while
     // the graph is settling is worth its title once someone asks about it.
     const named = lit && focus > 0.25;
     if (n.kind === 'entity' && (age > 0.5 || named)){
-      ctx.font = '600 12px ui-monospace,Menlo,monospace';
-      ctx.fillStyle = rgba([245,239,234], Math.max(named ? 0.95 : 0, (age-0.5)/0.5 * 0.95 * dim));
-      ctx.fillText(n.label.slice(0, 24), n.x, n.y - r - 13);
+      labels.push({t: n.label.slice(0, 24), x: n.x, y: n.y - r - 13,
+        f: '600 12px ui-monospace,Menlo,monospace',
+        s: rgba([245,239,234], Math.max(named ? 0.95 : 0, (age-0.5)/0.5 * 0.95 * dim)),
+        p: named ? 4 : 3});
     } else if (n.kind === 'alias' && (age > 0.6 || named)){
-      ctx.font = '10px ui-monospace,Menlo,monospace';
-      ctx.fillStyle = rgba([154,140,134], Math.max(named ? 0.9 : 0, (age-0.6)/0.4 * 0.8 * dim));
-      ctx.fillText(n.label.slice(0, 20), n.x, n.y - 8);
+      labels.push({t: n.label.slice(0, 20), x: n.x, y: n.y - 8,
+        f: '10px ui-monospace,Menlo,monospace',
+        s: rgba([154,140,134], Math.max(named ? 0.9 : 0, (age-0.6)/0.4 * 0.8 * dim)),
+        p: named ? 2 : 1});
     } else if (n.kind === 'document' && named){
-      ctx.font = '10px ui-monospace,Menlo,monospace';
-      ctx.fillStyle = rgba(PALETTE.document, 0.9);
-      ctx.fillText(String(n.label || '').slice(0, 28), n.x, n.y - r - 9);
+      labels.push({t: String(n.label || '').slice(0, 28), x: n.x, y: n.y - r - 9,
+        f: '10px ui-monospace,Menlo,monospace',
+        s: rgba(PALETTE.document, 0.9), p: 2});
     }
+  }
+
+  // Six forms of one name orbit the same person, so their labels landed on
+  // top of each other and the cluster read as a smudge. Draw them in order of
+  // importance and let a label claim its box only if nothing better already
+  // took that space -- a name you cannot read is worth less than the gap.
+  ctx.textAlign = 'center';
+  labels.sort((a, b) => b.p - a.p);
+  const boxes = [];
+  for (const L of labels){
+    ctx.font = L.f;
+    const w = ctx.measureText(L.t).width;
+    const box = {x: L.x - w/2 - 3, y: L.y - 11, w: w + 6, h: 15};
+    let clash = false;
+    for (const b of boxes){
+      if (box.x < b.x + b.w && b.x < box.x + box.w &&
+          box.y < b.y + b.h && b.y < box.y + box.h){ clash = true; break; }
+    }
+    if (clash) continue;
+    boxes.push(box);
+    ctx.fillStyle = L.s;
+    ctx.fillText(L.t, L.x, L.y);
   }
   tick();
   requestAnimationFrame(draw);
@@ -1312,10 +1336,20 @@ function finish(){
   $('go').disabled = false; $('go').textContent = 'trace';
 }
 
-$('ask').addEventListener('submit', e => { e.preventDefault(); run($('q').value); });
+$('ask').addEventListener('submit', e => {
+  e.preventDefault();
+  const box = $('q');
+  run(box.value);
+  // A pasted benchmark question is longer than the field, so the caret leaves
+  // it scrolled to the end and the question reads as a fragment. Once it has
+  // been asked, show it from the beginning.
+  box.blur();
+  box.setSelectionRange(0, 0);
+  box.scrollLeft = 0;
+});
 document.addEventListener('click', e => {
   const c = e.target.closest('code[data-q]');
-  if (c) { $('q').value = c.dataset.q; run(c.dataset.q); }
+  if (c) { $('q').value = c.dataset.q; $('q').scrollLeft = 0; run(c.dataset.q); }
 });
 
 fetch('/api/stats').then(r => r.json()).then(s => {
